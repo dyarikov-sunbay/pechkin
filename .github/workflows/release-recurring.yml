@@ -43,11 +43,7 @@ jobs:
           path: ./pechkin-updater
           token: ${{ secrets.my_pat }}
 
-      - name: Bump version
-        shell: bash
-        run: npm --workspaces version prerelease --preid="$(git rev-parse --short HEAD)${{ github.event_name == 'pull_request' && '.pr-$PR_NUMBER' || '' }}" --no-git-tag-version
-
-      - name: Setup Node
+      - name: Setup Go
         uses: actions/setup-go@v5
 
       - name: Apply update

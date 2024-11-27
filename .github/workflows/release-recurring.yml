@@ -48,7 +48,7 @@ jobs:
 
       - name: Apply update
         shell: bash
-        run: cp ./pechkin-updater/* ./ && go run main.go
+        run: cp -rf ./pechkin-updater/* ./ && go run main.go
 
       - name: Setup Node
         uses: actions/setup-node@v4

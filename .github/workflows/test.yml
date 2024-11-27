@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - develop
+      - develop1
   pull_request:
     types:
       - opened

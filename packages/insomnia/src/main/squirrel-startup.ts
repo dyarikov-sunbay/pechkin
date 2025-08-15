@@ -1,6 +1,9 @@
-import { spawn } from 'child_process';
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+
 import { app } from 'electron';
-import path from 'path';
+
+import log from '../common/log';
 
 function run(args: readonly string[] | undefined, done: (...args: any[]) => void) {
   const updateExe = path.resolve(path.dirname(process.execPath), '..', 'Update.exe');
@@ -15,24 +18,33 @@ export function checkIfRestartNeeded() {
   }
 
   const cmd = process.argv[1];
-  console.log('[main] processing squirrel command `%s`', cmd);
+  if (!cmd) {
+    return false;
+  }
+
+  log.info('[main] processing squirrel command `%s`', cmd);
+
   const target = path.basename(process.execPath);
 
   switch (cmd) {
-    case '--squirrel-install':
+    case '--squirrel-install': {
       run(['--createShortcut=' + target + ''], app.quit);
       return true;
+    }
 
-    case '--squirrel-uninstall':
+    case '--squirrel-uninstall': {
       run(['--removeShortcut=' + target + ''], app.quit);
       return true;
+    }
 
     case '--squirrel-updated':
-    case '--squirrel-obsolete':
+    case '--squirrel-obsolete': {
       app.quit();
       return true;
+    }
 
-    default:
+    default: {
       return false;
+    }
   }
 }

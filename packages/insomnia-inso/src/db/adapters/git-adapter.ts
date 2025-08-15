@@ -1,5 +1,6 @@
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
+
 import YAML from 'yaml';
 
 import type { Database, DbAdapter } from '../index';
@@ -24,10 +25,7 @@ const gitAdapter: DbAdapter = async (dir, filterTypes) => {
 
   const db = emptyDb();
 
-  const readAndInsertDoc = async (
-    type: keyof Database,
-    fileName: string,
-  ): Promise<void> => {
+  const readAndInsertDoc = async (type: keyof Database, fileName: string): Promise<void> => {
     // Get contents of each file in type dir and insert into data
     let contents = '';
     try {
@@ -40,7 +38,7 @@ const gitAdapter: DbAdapter = async (dir, filterTypes) => {
     (db[type] as {}[]).push(obj);
   };
 
-  const types = filterTypes?.length ? filterTypes : Object.keys(db) as (keyof Database)[];
+  const types = filterTypes?.length ? filterTypes : (Object.keys(db) as (keyof Database)[]);
   await Promise.all(
     types.map(async t => {
       // Get all files in type dir
@@ -54,9 +52,7 @@ const gitAdapter: DbAdapter = async (dir, filterTypes) => {
       }
       return Promise.all(
         // Insert each file from each type
-        files.map(file =>
-          readAndInsertDoc(t, path.join(dir, '.insomnia', t, file)),
-        ),
+        files.map(file => readAndInsertDoc(t, path.join(dir, '.insomnia', t, file))),
       );
     }),
   );

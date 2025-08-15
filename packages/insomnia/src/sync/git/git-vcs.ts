@@ -1,11 +1,12 @@
+import path from 'node:path';
+
 import * as git from 'isomorphic-git';
-import path from 'path';
 import { parse, stringify } from 'yaml';
 
 import type { MergeConflict } from '../types';
 import { httpClient } from './http-client';
 import { convertToPosixSep } from './path-sep';
-import { gitCallbacks } from './utils';
+import { getAuthorFromGitRepository, gitCallbacks } from './utils';
 
 export interface GitAuthor {
   name: string;
@@ -35,9 +36,7 @@ interface GitCredentialsOAuth {
 
 export type GitCredentials = GitCredentialsBase | GitCredentialsOAuth;
 
-export const isGitCredentialsOAuth = (
-  credentials: GitCredentials
-): credentials is GitCredentialsOAuth => {
+export const isGitCredentialsOAuth = (credentials: GitCredentials): credentials is GitCredentialsOAuth => {
   return 'oauth2format' in credentials;
 };
 
@@ -69,6 +68,8 @@ interface InitOptions {
   gitCredentials?: GitCredentials | null;
   uri?: string;
   repoId: string;
+  // If enabled git-vcs will only diff files inside a .insomnia directory
+  legacyDiff?: boolean;
 }
 
 interface InitFromCloneOptions {
@@ -118,15 +119,14 @@ interface BaseOpts {
   onAuth: git.AuthCallback;
   uri: string;
   repoId: string;
+  legacyDiff?: boolean;
 }
 
 export class GitVCS {
   // @ts-expect-error -- TSCONVERSION not initialized with required properties
   _baseOpts: BaseOpts = gitCallbacks();
 
-  initializedRepoId = '';
-
-  async init({ directory, fs, gitDirectory, gitCredentials, uri = '', repoId }: InitOptions) {
+  async init({ directory, fs, gitDirectory, gitCredentials, uri = '', repoId, legacyDiff = false }: InitOptions) {
     this._baseOpts = {
       ...this._baseOpts,
       dir: directory,
@@ -136,6 +136,7 @@ export class GitVCS {
       http: httpClient,
       uri,
       repoId,
+      legacyDiff,
     };
 
     if (await this.repoExists()) {
@@ -179,14 +180,7 @@ export class GitVCS {
     }
   }
 
-  async initFromClone({
-    repoId,
-    url,
-    gitCredentials,
-    directory,
-    fs,
-    gitDirectory,
-  }: InitFromCloneOptions) {
+  async initFromClone({ repoId, url, gitCredentials, directory, fs, gitDirectory }: InitFromCloneOptions) {
     this._baseOpts = {
       ...this._baseOpts,
       ...gitCallbacks(gitCredentials),
@@ -239,9 +233,7 @@ export class GitVCS {
       branches.push(branch);
     }
 
-    console.log(
-      `[git] Local branches: ${branches.join(', ')} (current: ${branch})`
-    );
+    console.log(`[git] Local branches: ${branches.join(', ')} (current: ${branch})`);
 
     return GitVCS.sortBranches(branches);
   }
@@ -265,11 +257,7 @@ export class GitVCS {
       });
       console.log({ branches });
       // Don't care about returning remote HEAD
-      return GitVCS.sortBranches(
-        branches
-          .filter(b => b.ref !== 'HEAD')
-          .map(b => b.ref.replace('refs/heads/', ''))
-      );
+      return GitVCS.sortBranches(branches.filter(b => b.ref !== 'HEAD').map(b => b.ref.replace('refs/heads/', '')));
     } catch (e) {
       console.log(`[git] Failed to list remote branches for ${uri}`, e);
       return [];
@@ -319,11 +307,7 @@ export class GitVCS {
         const headOid = headType === 'blob' ? await head?.oid() : undefined;
         const stageOid = stageType === 'blob' ? await stage?.oid() : undefined;
         let workdirOid;
-        if (
-          headType !== 'blob' &&
-          workdirType === 'blob' &&
-          stageType !== 'blob'
-        ) {
+        if (headType !== 'blob' && workdirType === 'blob' && stageType !== 'blob') {
           workdirOid = '42';
         } else if (workdirType === 'blob') {
           workdirOid = await workdir?.oid();
@@ -375,19 +359,19 @@ export class GitVCS {
           }
         }
 
-        const blobsAsJSONStrings = [headBlob, workdirBlob, stageBlob].map(blob => {
+        const blobsAsStrings = [headBlob, workdirBlob, stageBlob].map(blob => {
           if (!blob) {
             return null;
           }
 
           try {
-            return JSON.stringify(parse(Buffer.from(blob).toString('utf-8')));
+            return Buffer.from(blob).toString('utf-8');
           } catch (e) {
             return null;
           }
         });
 
-        return [filepath, ...blobsAsJSONStrings];
+        return [filepath, ...blobsAsStrings];
       },
     });
 
@@ -420,12 +404,25 @@ export class GitVCS {
         git.STAGE(),
       ],
       map: async function map(filepath, [head, workdir, stage]) {
-        const isInsomniaFile = filepath.startsWith(GIT_INSOMNIA_DIR_NAME) || filepath === '.';
+        if (baseOpts.legacyDiff) {
+          const isInsomniaFile =
+            filepath.startsWith(GIT_INSOMNIA_DIR_NAME) || filepath.startsWith('insomnia.') || filepath === '.';
+          if (!isInsomniaFile) {
+            return null;
+          }
+        } else {
+          // If the path is a file with an extension different than yaml we don't want to check it
+          if (path.extname(filepath) && path.extname(filepath) !== '.yaml') {
+            return null;
+          }
+        }
 
-        if (await git.isIgnored({
-          ...baseOpts,
-          filepath,
-        }) || !isInsomniaFile) {
+        if (
+          await git.isIgnored({
+            ...baseOpts,
+            filepath,
+          })
+        ) {
           return null;
         }
         const [headType, workdirType, stageType] = await Promise.all([
@@ -459,34 +456,12 @@ export class GitVCS {
         const headOid = headType === 'blob' ? await head?.oid() : undefined;
         const stageOid = stageType === 'blob' ? await stage?.oid() : undefined;
         let workdirOid;
-        if (
-          headType !== 'blob' &&
-          workdirType === 'blob' &&
-          stageType !== 'blob'
-        ) {
+        if (headType !== 'blob' && workdirType === 'blob' && stageType !== 'blob') {
           // We don't actually NEED the sha. Any sha will do
           // TODO: update this logic to handle N trees instead of just 3.
           workdirOid = '42';
         } else if (workdirType === 'blob') {
           workdirOid = await workdir?.oid();
-        }
-
-        const headBlob = await head?.content();
-        const workdirBlob = await workdir?.content();
-        let stageBlob = await stage?.content();
-
-        if (!stageBlob && stageOid) {
-          try {
-            const { blob } = await git.readBlob({
-              ...baseOpts,
-
-              oid: stageOid,
-            });
-
-            stageBlob = blob;
-          } catch (e) {
-            console.log('[git] Failed to read blob', e);
-          }
         }
 
         // Adopted from isomorphic-git statusMatrix.
@@ -496,18 +471,46 @@ export class GitVCS {
         const result = entry.map(value => entry.indexOf(value));
         result.shift(); // remove leading undefined entry
 
+        let headName = filepath;
+        let workdirName = filepath;
+        let stageName = filepath;
+
+        if (baseOpts.legacyDiff) {
+          const headBlob = await head?.content();
+          const workdirBlob = await workdir?.content();
+          let stageBlob = await stage?.content();
+
+          if (!stageBlob && stageOid) {
+            try {
+              const { blob } = await git.readBlob({
+                ...baseOpts,
+
+                oid: stageOid,
+              });
+
+              stageBlob = blob;
+            } catch (e) {
+              console.log('[git] Failed to read blob', e);
+            }
+          }
+
+          headName = getInsomniaFileName(headBlob);
+          workdirName = getInsomniaFileName(workdirBlob);
+          stageName = getInsomniaFileName(stageBlob);
+        }
+
         return {
           filepath,
           head: {
-            name: getInsomniaFileName(headBlob),
+            name: headName,
             status: result[0],
           },
           workdir: {
-            name: getInsomniaFileName(workdirBlob),
+            name: workdirName,
             status: result[1],
           },
           stage: {
-            name: getInsomniaFileName(stageBlob),
+            name: stageName,
             status: result[2],
           },
         };
@@ -561,7 +564,19 @@ export class GitVCS {
     return git.listRemotes({ ...this._baseOpts });
   }
 
-  async setAuthor(name: string, email: string) {
+  async setAuthor(author?: GitAuthor) {
+    let name = '';
+    let email = '';
+
+    if (author) {
+      name = author.name;
+      email = author.email;
+    } else {
+      const author = await getAuthorFromGitRepository(this._baseOpts.repoId);
+      name = author.name;
+      email = author.email;
+    }
+
     await git.setConfig({ ...this._baseOpts, path: 'user.name', value: name });
     await git.setConfig({
       ...this._baseOpts,
@@ -603,10 +618,15 @@ export class GitVCS {
       url: remote.url,
     });
     const logs = (await this.log({ depth: 1 })) || [];
-    const localHead = logs[0].oid;
+    const localHead = logs[0]?.oid;
     const remoteRefs = remoteInfo.refs || {};
     const remoteHeads = remoteRefs.heads || {};
     const remoteHead = remoteHeads[branch];
+
+    // If there is no local or remote head it means that the branch is new
+    if (!localHead && !remoteHead) {
+      return true;
+    }
 
     if (localHead === remoteHead) {
       return false;
@@ -617,23 +637,36 @@ export class GitVCS {
 
   async push(gitCredentials?: GitCredentials | null, force = false) {
     console.log(`[git] Push remote=origin force=${force ? 'true' : 'false'}`);
-    // eslint-disable-next-line no-unreachable
-    const response: git.PushResult = await git.push({
+
+    const response = await git.push({
       ...this._baseOpts,
       ...gitCallbacks(gitCredentials),
       remote: 'origin',
       force,
     });
 
-    // @ts-expect-error -- TSCONVERSION git errors are not handled correctly
-    if (response.errors?.length) {
+    if (response.error) {
       console.log('[git] Push rejected', response);
-      // @ts-expect-error -- TSCONVERSION git errors are not handled correctly
-      const errorsString = JSON.stringify(response.errors);
       throw new Error(
-        `Push rejected with errors: ${errorsString}.\n\nGo to View > Toggle DevTools > Console for more information.`
+        `Push rejected with errors: ${response.error}.\n\nGo to View > Toggle DevTools > Console for more information.`,
       );
     }
+
+    if ('errors' in response && response.errors && Array.isArray(response.errors)) {
+      console.log('[git] Push failed with errors', response.errors);
+      const errorsString = JSON.stringify(response.errors);
+      throw new Error(
+        `Push rejected with errors: ${errorsString}.\n\nGo to View > Toggle DevTools > Console for more information.`,
+      );
+    }
+
+    // NOTE: Response can be ok and have errors so we check this in the end to make sure we throw an error if there are any.
+    if (response.ok) {
+      console.log('[git] Push successful');
+      return;
+    }
+
+    throw new Error('Push failed with unknown error. Please try again.');
   }
 
   async _hasUncommittedChanges() {
@@ -647,27 +680,22 @@ export class GitVCS {
       throw new Error('Cannot pull with uncommitted changes, please commit local changes first.');
     }
     console.log('[git] Pull remote=origin', await this.getCurrentBranch());
-    return git.pull({
-      ...this._baseOpts,
-      ...gitCallbacks(gitCredentials),
-      remote: 'origin',
-      singleBranch: true,
-    }).catch(
-      async err => {
+    return git
+      .pull({
+        ...this._baseOpts,
+        ...gitCallbacks(gitCredentials),
+        remote: 'origin',
+        singleBranch: true,
+      })
+      .catch(async err => {
         if (err instanceof git.Errors.MergeConflictError) {
           const oursBranch = await this.getCurrentBranch();
           const theirsBranch = `origin/${oursBranch}`;
 
-          return await this._collectMergeConflicts(
-            err,
-            oursBranch,
-            theirsBranch,
-          );
-        } else {
-          throw err;
+          return await this._collectMergeConflicts(err, oursBranch, theirsBranch);
         }
-      },
-    );
+        throw err;
+      });
   }
 
   // Collect merge conflict details from isomorphic-git git.Errors.MergeConflictError and throw a MergeConflictError which will be used to display the conflicts in the SyncMergeModal
@@ -676,9 +704,7 @@ export class GitVCS {
     oursBranch: string,
     theirsBranch: string,
   ) {
-    const {
-      filepaths, bothModified, deleteByUs, deleteByTheirs,
-    } = mergeConflictError.data;
+    const { filepaths, bothModified, deleteByUs, deleteByTheirs } = mergeConflictError.data;
     if (filepaths.length) {
       const mergeConflicts: MergeConflict[] = [];
       const conflictPathsObj = {
@@ -686,11 +712,7 @@ export class GitVCS {
         deleteByUs,
         deleteByTheirs,
       };
-      const conflictTypeList: (keyof typeof conflictPathsObj)[] = [
-        'bothModified',
-        'deleteByUs',
-        'deleteByTheirs',
-      ];
+      const conflictTypeList: (keyof typeof conflictPathsObj)[] = ['bothModified', 'deleteByUs', 'deleteByTheirs'];
 
       const oursHeadCommitOid = await git.resolveRef({
         ...this._baseOpts,
@@ -705,16 +727,16 @@ export class GitVCS {
       const _baseOpts = this._baseOpts;
 
       function readBlob(filepath: string, oid: string) {
-        return git.readBlob({
-          ..._baseOpts,
-          oid,
-          filepath,
-        }).then(
-          ({ blob, oid: blobId }) => ({
+        return git
+          .readBlob({
+            ..._baseOpts,
+            oid,
+            filepath,
+          })
+          .then(({ blob, oid: blobId }) => ({
             blobContent: parse(Buffer.from(blob).toString('utf8')),
             blobId,
-          })
-        );
+          }));
       }
 
       function readOursBlob(filepath: string) {
@@ -728,9 +750,9 @@ export class GitVCS {
       for (const conflictType of conflictTypeList) {
         const conflictPaths = conflictPathsObj[conflictType];
         const message = {
-          'bothModified': 'both modified',
-          'deleteByUs': 'you deleted and they modified',
-          'deleteByTheirs': 'they deleted and you modified',
+          bothModified: 'both modified',
+          deleteByUs: 'you deleted and they modified',
+          deleteByTheirs: 'they deleted and you modified',
         }[conflictType];
         for (const conflictPath of conflictPaths) {
           let mineBlobContent = null;
@@ -740,19 +762,13 @@ export class GitVCS {
           let theirsBlobId = null;
 
           if (conflictType !== 'deleteByUs') {
-            const {
-              blobContent,
-              blobId,
-            } = await readOursBlob(conflictPath);
+            const { blobContent, blobId } = await readOursBlob(conflictPath);
             mineBlobContent = blobContent;
             mineBlobId = blobId;
           }
 
           if (conflictType !== 'deleteByTheirs') {
-            const {
-              blobContent,
-              blobId,
-            } = await readTheirsBlob(conflictPath);
+            const { blobContent, blobId } = await readTheirsBlob(conflictPath);
             theirsBlobContent = blobContent;
             theirsBlobId = blobId;
           }
@@ -780,7 +796,6 @@ export class GitVCS {
         commitMessage: `Merge branch '${theirsBranch}' into ${oursBranch}`,
         commitParent: [oursHeadCommitOid, theirsHeadCommitOid],
       });
-
     } else {
       throw new Error('Merge conflict filepaths is of length 0');
     }
@@ -799,22 +814,17 @@ export class GitVCS {
   }) {
     console.log('[git] continue to merge after resolving merge conflicts', await this.getCurrentBranch());
 
-    // Because wo don't need to do anything with the conflicts that user has chosen to keep 'ours'
+    // Because wo don't need to do anything with the conflicts that the user has chosen to keep 'ours'
     // Here we just filter in conflicts that user has chosen to keep 'theirs'
     handledMergeConflicts = handledMergeConflicts.filter(conflict => conflict.choose !== conflict.mineBlob);
 
     for (const conflict of handledMergeConflicts) {
       assertIsPromiseFsClient(this._baseOpts.fs);
       if (conflict.theirsBlobContent) {
-        await this._baseOpts.fs.promises.writeFile(
-          conflict.key,
-          stringify(conflict.theirsBlobContent),
-        );
+        await this._baseOpts.fs.promises.writeFile(conflict.key, stringify(conflict.theirsBlobContent));
         await git.add({ ...this._baseOpts, filepath: conflict.key });
       } else {
-        await this._baseOpts.fs.promises.unlink(
-          conflict.key,
-        );
+        await this._baseOpts.fs.promises.unlink(conflict.key);
         await git.remove({ ...this._baseOpts, filepath: conflict.key });
       }
     }
@@ -844,24 +854,26 @@ export class GitVCS {
     }
     const oursBranch = await this.getCurrentBranch();
     console.log(`[git] Merge ${oursBranch} <-- ${theirsBranch}`);
-    return git.merge({
-      ...this._baseOpts,
-      ours: oursBranch,
-      theirs: theirsBranch,
-      abortOnConflict: false,
-    }).catch(
-      async err => {
+    return git
+      .merge({
+        ...this._baseOpts,
+        ours: oursBranch,
+        theirs: theirsBranch,
+        abortOnConflict: false,
+      })
+      .catch(async err => {
         if (err instanceof git.Errors.MergeConflictError) {
-          return await this._collectMergeConflicts(
-            err,
-            oursBranch,
-            theirsBranch,
-          );
-        } else {
-          throw err;
+          return await this._collectMergeConflicts(err, oursBranch, theirsBranch);
         }
-      },
-    );
+
+        if (err instanceof git.Errors.MergeNotSupportedError) {
+          const errorMessage = 'Merges with additions are not supported yet.';
+
+          throw new Error(errorMessage);
+        }
+
+        throw err;
+      });
   }
 
   async fetch({
@@ -885,11 +897,10 @@ export class GitVCS {
       depth,
       prune: true,
       pruneTags: true,
-
     });
   }
 
-  async log(input: {depth?: number} = {}) {
+  async log(input: { depth?: number } = {}) {
     const { depth = 35 } = input;
     try {
       const remoteOriginURI = await this.getRemoteOriginURI();
@@ -1014,7 +1025,6 @@ export class GitVCS {
           filepaths: [convertToPosixSep(change.path)],
         });
       }
-
     }
   }
 
@@ -1025,23 +1035,25 @@ export class GitVCS {
         return -1;
       } else if (b === 'master') {
         return 1;
-      } else {
-        return b > a ? -1 : 1;
       }
+      return b > a ? -1 : 1;
     });
     return newBranches;
   }
 }
 export class MergeConflictError extends Error {
-  constructor(msg: string, data: {
-    conflicts: MergeConflict[];
-    labels: {
-      ours: string;
-      theirs: string;
-    };
-    commitMessage: string;
-    commitParent: string[];
-  }) {
+  constructor(
+    msg: string,
+    data: {
+      conflicts: MergeConflict[];
+      labels: {
+        ours: string;
+        theirs: string;
+      };
+      commitMessage: string;
+      commitParent: string[];
+    },
+  ) {
     super(msg);
     this.data = data;
   }

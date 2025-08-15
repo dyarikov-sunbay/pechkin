@@ -1,6 +1,7 @@
-import fs from 'fs';
+import fs from 'node:fs';
+
 import React, { type FC, useCallback } from 'react';
-import { useParams, useRouteLoaderData } from 'react-router-dom';
+import { useParams, useRouteLoaderData } from 'react-router';
 
 import { PREVIEW_MODE_FRIENDLY, PREVIEW_MODE_RAW, PREVIEW_MODE_SOURCE } from '../../../common/constants';
 import type { CurlEvent, CurlMessageEvent } from '../../../main/network/curl';
@@ -69,8 +70,8 @@ export const MessageEventView: FC<Props<CurlMessageEvent | WebSocketMessageEvent
   const { activeRequestMeta } = useRouteLoaderData('request/:requestId') as RequestLoaderData;
   const previewMode = activeRequestMeta.previewMode || PREVIEW_MODE_SOURCE;
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex flex-row box-border h-8 border-b border-gray-300 p-2">
+    <div className="flex h-full flex-col">
+      <div className="box-border flex h-8 flex-row border-b border-gray-300 p-2">
         <WebSocketPreviewModeDropdown
           download={handleDownloadResponseBody}
           copyToClipboard={handleCopyResponseToClipboard}

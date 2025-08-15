@@ -1,9 +1,7 @@
-import * as Sentry from '@sentry/electron/renderer';
-import { type ActionFunction, type LoaderFunction, redirect } from 'react-router-dom';
+import { type ActionFunction, type LoaderFunction, redirect } from 'react-router';
 
 import { database, type Operation } from '../../common/database';
 import { isNotNullOrUndefined } from '../../common/misc';
-import { SentryMetrics } from '../../common/sentry';
 import * as models from '../../models';
 import { canSync } from '../../models';
 import type { ApiSpec } from '../../models/api-spec';
@@ -17,16 +15,34 @@ import type { UnitTest } from '../../models/unit-test';
 import type { UnitTestSuite } from '../../models/unit-test-suite';
 import type { WebSocketRequest } from '../../models/websocket-request';
 import { scopeToActivity, type Workspace } from '../../models/workspace';
-import type {
-  BackendProject,
-  Compare,
-  Snapshot,
-  Status,
-  StatusCandidate,
-} from '../../sync/types';
+import type { BackendProject, Compare, Snapshot, Status, StatusCandidate } from '../../sync/types';
 import { UserAbortResolveMergeConflictError, VCSInstance } from '../../sync/vcs/insomnia-sync';
 import { pullBackendProject } from '../../sync/vcs/pull-backend-project';
 import { invariant } from '../../utils/invariant';
+import { SegmentEvent } from '../analytics';
+
+type PushPull = 'push' | 'pull';
+type VCSAction =
+  | PushPull
+  | `force_${PushPull}`
+  | 'create_branch'
+  | 'merge_branch'
+  | 'delete_branch'
+  | 'checkout_branch'
+  | 'commit'
+  | 'stage_all'
+  | 'stage'
+  | 'unstage_all'
+  | 'unstage'
+  | 'rollback'
+  | 'rollback_all'
+  | 'update'
+  | 'setup'
+  | 'clone';
+
+export function vcsSegmentEventProperties(type: 'remote', action: VCSAction, error?: string) {
+  return { type, action, error };
+}
 
 async function getSyncItems({ workspaceId }: { workspaceId: string }) {
   const syncItemsList: (
@@ -48,15 +64,9 @@ async function getSyncItems({ workspaceId }: { workspaceId: string }) {
   // first recursion to get all the folders ids in order to use nedb search by an array
   const flattenFoldersIntoList = async (id: string): Promise<string[]> => {
     const parentIds: string[] = [id];
-    const folderIds = (await models.requestGroup.findByParentId(id)).map(
-      r => r._id
-    );
+    const folderIds = (await models.requestGroup.findByParentId(id)).map(r => r._id);
     if (folderIds.length) {
-      await Promise.all(
-        folderIds.map(async folderIds =>
-          parentIds.push(...(await flattenFoldersIntoList(folderIds)))
-        )
-      );
+      await Promise.all(folderIds.map(async folderIds => parentIds.push(...(await flattenFoldersIntoList(folderIds)))));
     }
     return parentIds;
   };
@@ -97,9 +107,9 @@ async function getSyncItems({ workspaceId }: { workspaceId: string }) {
   const baseEnvironment = await models.environment.getByParentId(workspaceId);
   invariant(baseEnvironment, 'Base environment not found');
 
-  const subEnvironments = (
-    await models.environment.findByParentId(baseEnvironment._id)
-  ).sort((e1, e2) => e1.metaSortKey - e2.metaSortKey);
+  const subEnvironments = (await models.environment.findByParentId(baseEnvironment._id)).sort(
+    (e1, e2) => e1.metaSortKey - e2.metaSortKey,
+  );
   allRequests.map(r => syncItemsList.push(r));
   tests.map(t => syncItemsList.push(t));
   testSuites.map(t => syncItemsList.push(t));
@@ -110,23 +120,18 @@ async function getSyncItems({ workspaceId }: { workspaceId: string }) {
     syncItemsList.push(activeApiSpec);
   }
 
-  const syncItems: StatusCandidate[] = syncItemsList
-    .filter(canSync)
-    .map(i => ({
-      key: i._id,
-      name: i.name || '',
-      document: i,
-    }));
+  const syncItems: StatusCandidate[] = syncItemsList.filter(canSync).map(i => ({
+    key: i._id,
+    name: i.name || '',
+    document: i,
+  }));
 
   return {
     syncItems,
   };
 }
 
-export const pullRemoteCollectionAction: ActionFunction = async ({
-  request,
-  params,
-}) => {
+export const pullRemoteCollectionAction: ActionFunction = async ({ request, params }) => {
   try {
     const { organizationId } = params;
     invariant(typeof organizationId === 'string', 'Organization Id is required');
@@ -144,9 +149,7 @@ export const pullRemoteCollectionAction: ActionFunction = async ({
       teamProjectId: remoteId,
     });
 
-    const backendProject = remoteBackendProjects.find(
-      p => p.id === backendProjectId
-    );
+    const backendProject = remoteBackendProjects.find(p => p.id === backendProjectId);
 
     invariant(backendProject, 'Backend project not found');
 
@@ -170,9 +173,7 @@ export const pullRemoteCollectionAction: ActionFunction = async ({
     invariant(workspace, 'Workspace not found');
     const activity = scopeToActivity(workspace?.scope);
 
-    return redirect(
-      `/organization/${organizationId}/project/${project._id}/workspace/${workspaceId}/${activity}`
-    );
+    return redirect(`/organization/${organizationId}/project/${project._id}/workspace/${workspaceId}/${activity}`);
   } catch (e) {
     console.warn('Failed to pull remote collection', e);
     return {
@@ -185,9 +186,7 @@ export interface RemoteCollectionsLoaderData {
   backendProjectsToPull: BackendProject[];
 }
 
-export const remoteLoader: LoaderFunction = async ({
-  params,
-}): Promise<RemoteCollectionsLoaderData> => {
+export const remoteLoader: LoaderFunction = async ({ params }): Promise<RemoteCollectionsLoaderData> => {
   const { organizationId, projectId } = params;
   invariant(typeof organizationId === 'string', 'Organization Id is required');
   invariant(typeof projectId === 'string', 'Project Id is required');
@@ -197,39 +196,34 @@ export const remoteLoader: LoaderFunction = async ({
     invariant(project, 'Project not found');
 
     const remoteId = project.remoteId;
-    invariant(remoteId, 'Project is not a remote project');
+    if (!remoteId) {
+      return {
+        backendProjectsToPull: [],
+      };
+    }
     const vcs = VCSInstance();
 
-    const allPulledBackendProjectsForRemoteId = (
-      await vcs.localBackendProjects()
-    ).filter(p => p.id === remoteId);
+    const allPulledBackendProjectsForRemoteId = (await vcs.localBackendProjects()).filter(p => p.id === remoteId);
     // Remote backend projects are fetched from the backend since they are not stored locally
-    const allFetchedRemoteBackendProjectsForRemoteId =
-      await vcs.remoteBackendProjects({
-        teamId: organizationId,
-        teamProjectId: remoteId,
-      });
+    const allFetchedRemoteBackendProjectsForRemoteId = await vcs.remoteBackendProjects({
+      teamId: organizationId,
+      teamProjectId: remoteId,
+    });
 
     // Get all workspaces that are connected to backend projects and under the current project
-    const workspacesWithBackendProjects = await database.find<Workspace>(
-      models.workspace.type,
-      {
-        _id: {
-          $in: [
-            ...allPulledBackendProjectsForRemoteId,
-            ...allFetchedRemoteBackendProjectsForRemoteId,
-          ].map(p => p.rootDocumentId),
-        },
-        parentId: project._id,
-      }
-    );
+    const workspacesWithBackendProjects = await database.find<Workspace>(models.workspace.type, {
+      _id: {
+        $in: [...allPulledBackendProjectsForRemoteId, ...allFetchedRemoteBackendProjectsForRemoteId].map(
+          p => p.rootDocumentId,
+        ),
+      },
+      parentId: project._id,
+    });
 
     // Get the list of remote backend projects that we need to pull
-    const backendProjectsToPull =
-      allFetchedRemoteBackendProjectsForRemoteId.filter(
-        p =>
-          !workspacesWithBackendProjects.find(w => w._id === p.rootDocumentId)
-      );
+    const backendProjectsToPull = allFetchedRemoteBackendProjectsForRemoteId.filter(
+      p => !workspacesWithBackendProjects.find(w => w._id === p.rootDocumentId),
+    );
 
     return {
       backendProjectsToPull,
@@ -255,8 +249,7 @@ interface SyncData {
 }
 
 const remoteBranchesCache: Record<string, string[]> = {};
-const remoteCompareCache: Record<string, Compare> =
-  {};
+const remoteCompareCache: Record<string, Compare> = {};
 const remoteBackendProjectsCache: Record<string, BackendProject[]> = {};
 
 export const syncDataAction: ActionFunction = async ({ params }) => {
@@ -286,8 +279,7 @@ export const syncDataAction: ActionFunction = async ({ params }) => {
       remoteBackendProjects,
     };
   } catch (e) {
-    const errorMessage =
-      e instanceof Error ? e.message : 'Unknown error while syncing data.';
+    const errorMessage = e instanceof Error ? e.message : 'Unknown error while syncing data.';
     delete remoteBranchesCache[workspaceId];
     delete remoteCompareCache[workspaceId];
     delete remoteBackendProjectsCache[workspaceId];
@@ -303,9 +295,7 @@ export type SyncDataLoaderData =
       error: string;
     };
 
-export const syncDataLoader: LoaderFunction = async ({
-  params,
-}): Promise<SyncDataLoaderData> => {
+export const syncDataLoader: LoaderFunction = async ({ params }): Promise<SyncDataLoaderData> => {
   try {
     const { projectId, workspaceId } = params;
     invariant(typeof projectId === 'string', 'Project Id is required');
@@ -318,18 +308,14 @@ export const syncDataLoader: LoaderFunction = async ({
     const { syncItems } = await getSyncItems({ workspaceId });
     const localBranches = (await vcs.getBranchNames()).sort();
     const currentBranch = await vcs.getCurrentBranchName();
-    const history = (await vcs.getHistory()).sort((a, b) =>
-      b.created > a.created ? 1 : -1
-    );
+    const history = (await vcs.getHistory()).sort((a, b) => (b.created > a.created ? 1 : -1));
     const historyCount = await vcs.getHistoryCount();
     const status = await vcs.status(syncItems);
 
     let remoteBranches: string[] = [];
     let compare = { ahead: 0, behind: 0 };
     try {
-      remoteBranches = (
-        remoteBranchesCache[workspaceId] || (await vcs.getRemoteBranchNames())
-      ).sort();
+      remoteBranches = (remoteBranchesCache[workspaceId] || (await vcs.getRemoteBranchNames())).sort();
       compare = remoteCompareCache[workspaceId] || (await vcs.compareRemoteBranch());
       const remoteBackendProjects =
         remoteBackendProjectsCache[workspaceId] ||
@@ -353,7 +339,7 @@ export const syncDataLoader: LoaderFunction = async ({
         hasUncommittedChanges,
         hasUnpushedChanges: compare?.ahead > 0,
       });
-    } catch (e) { }
+    } catch (e) {}
 
     return {
       syncItems,
@@ -366,18 +352,14 @@ export const syncDataLoader: LoaderFunction = async ({
       compare,
     };
   } catch (e) {
-    const errorMessage =
-      e instanceof Error ? e.message : 'Unknown error while loading sync data.';
+    const errorMessage = e instanceof Error ? e.message : 'Unknown error while loading sync data.';
     return {
       error: errorMessage,
     };
   }
 };
 
-export const checkoutBranchAction: ActionFunction = async ({
-  request,
-  params,
-}) => {
+export const checkoutBranchAction: ActionFunction = async ({ request, params }) => {
   const { organizationId, projectId, workspaceId } = params;
   invariant(typeof organizationId === 'string', 'Organization Id is required');
   invariant(typeof projectId === 'string', 'Project Id is required');
@@ -392,24 +374,16 @@ export const checkoutBranchAction: ActionFunction = async ({
     await database.batchModifyDocs(delta as Operation);
     delete remoteCompareCache[workspaceId];
   } catch (err) {
-    const errorMessage =
-      err instanceof Error
-        ? err.message
-        : 'Unknown error while checking out branch.';
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error while checking out branch.';
     return {
       error: errorMessage,
     };
   }
 
-  return redirect(
-    `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug`
-  );
+  return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug`);
 };
 
-export const mergeBranchAction: ActionFunction = async ({
-  request,
-  params,
-}) => {
+export const mergeBranchAction: ActionFunction = async ({ request, params }) => {
   const { workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace Id is required');
   const formData = await request.formData();
@@ -423,18 +397,14 @@ export const mergeBranchAction: ActionFunction = async ({
   } catch (err) {
     if (err instanceof UserAbortResolveMergeConflictError) {
       return null;
-    } else {
-      throw err;
     }
+    throw err;
   }
   try {
     await database.batchModifyDocs(delta as Operation);
     delete remoteCompareCache[workspaceId];
   } catch (err) {
-    const errorMessage =
-      err instanceof Error
-        ? err.message
-        : 'Unknown error while merging branch.';
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error while merging branch.';
     return {
       error: errorMessage,
     };
@@ -443,10 +413,7 @@ export const mergeBranchAction: ActionFunction = async ({
   return null;
 };
 
-export const createBranchAction: ActionFunction = async ({
-  request,
-  params,
-}) => {
+export const createBranchAction: ActionFunction = async ({ request, params }) => {
   const { workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace Id is required');
   const formData = await request.formData();
@@ -461,10 +428,7 @@ export const createBranchAction: ActionFunction = async ({
     await database.batchModifyDocs(delta as Operation);
     delete remoteCompareCache[workspaceId];
   } catch (err) {
-    const errorMessage =
-      err instanceof Error
-        ? err.message
-        : 'Unknown error while merging branch.';
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error while merging branch.';
     return {
       error: errorMessage,
     };
@@ -473,10 +437,7 @@ export const createBranchAction: ActionFunction = async ({
   return null;
 };
 
-export const deleteBranchAction: ActionFunction = async ({
-  params,
-  request,
-}) => {
+export const deleteBranchAction: ActionFunction = async ({ params, request }) => {
   const { organizationId, projectId, workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace Id is required');
   const formData = await request.formData();
@@ -494,22 +455,16 @@ export const deleteBranchAction: ActionFunction = async ({
 
     delete remoteBranchesCache[workspaceId];
   } catch (err) {
-    const errorMessage =
-      err instanceof Error
-        ? err.message
-        : 'Unknown error while merging branch.';
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error while merging branch.';
     return {
       error: errorMessage,
     };
   }
 
-  return redirect(
-    `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug`
-  );
+  return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug`);
 };
 
 export const pullFromRemoteAction: ActionFunction = async ({ params }) => {
-  const startPullActionTime = performance.now();
   const { organizationId, projectId, workspaceId } = params;
   invariant(typeof projectId === 'string', 'Project Id is required');
   invariant(typeof workspaceId === 'string', 'Workspace Id is required');
@@ -526,33 +481,30 @@ export const pullFromRemoteAction: ActionFunction = async ({ params }) => {
       projectId: project._id,
     });
 
+    window.main.trackSegmentEvent({
+      event: SegmentEvent.vcsAction,
+      properties: vcsSegmentEventProperties('remote', 'pull'),
+    });
+
     await database.batchModifyDocs(delta);
     delete remoteCompareCache[workspaceId];
-
-    const duration = performance.now() - startPullActionTime;
-    Sentry.metrics.distribution(SentryMetrics.CLOUD_SYNC_DURATION, duration, {
-      unit: 'millisecond',
-      tags: { action: 'pull' },
-    });
   } catch (err) {
-    const errorMessage =
-      err instanceof Error
-        ? err.message
-        : 'Unknown error while pulling from remote.';
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error while pulling from remote.';
+
+    window.main.trackSegmentEvent({
+      event: SegmentEvent.vcsAction,
+      properties: vcsSegmentEventProperties('remote', 'pull', errorMessage),
+    });
+
     return {
       error: errorMessage,
     };
   }
 
-  return redirect(
-    `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug`
-  );
+  return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug`);
 };
 
-export const fetchRemoteBranchAction: ActionFunction = async ({
-  request,
-  params,
-}) => {
+export const fetchRemoteBranchAction: ActionFunction = async ({ request, params }) => {
   const { projectId, workspaceId } = params;
   invariant(typeof projectId === 'string', 'Project Id is required');
   invariant(typeof workspaceId === 'string', 'Workspace Id is required');
@@ -578,10 +530,7 @@ export const fetchRemoteBranchAction: ActionFunction = async ({
     await database.batchModifyDocs(delta);
   } catch (err) {
     await vcs.checkout([], currentBranch);
-    const errorMessage =
-      err instanceof Error
-        ? err.message
-        : 'Unknown error while fetching remote branch.';
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error while fetching remote branch.';
     return {
       error: errorMessage,
     };
@@ -591,7 +540,6 @@ export const fetchRemoteBranchAction: ActionFunction = async ({
 };
 
 export const pushToRemoteAction: ActionFunction = async ({ params }) => {
-  const startPushActionTime = performance.now();
   const { projectId, workspaceId } = params;
   invariant(typeof projectId === 'string', 'Project Id is required');
   invariant(typeof workspaceId === 'string', 'Workspace Id is required');
@@ -606,18 +554,21 @@ export const pushToRemoteAction: ActionFunction = async ({ params }) => {
       teamId: project.parentId,
       teamProjectId: project.remoteId,
     });
-    delete remoteCompareCache[workspaceId];
 
-    const duration = performance.now() - startPushActionTime;
-    Sentry.metrics.distribution(SentryMetrics.CLOUD_SYNC_DURATION, duration, {
-      unit: 'millisecond',
-      tags: { action: 'push' },
+    window.main.trackSegmentEvent({
+      event: SegmentEvent.vcsAction,
+      properties: vcsSegmentEventProperties('remote', 'push'),
     });
+
+    delete remoteCompareCache[workspaceId];
   } catch (err) {
-    const errorMessage =
-      err instanceof Error
-        ? err.message
-        : 'Unknown error while pushing to remote.';
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error while pushing to remote.';
+
+    window.main.trackSegmentEvent({
+      event: SegmentEvent.vcsAction,
+      properties: vcsSegmentEventProperties('remote', 'push', errorMessage),
+    });
+
     return {
       error: errorMessage,
     };
@@ -636,24 +587,16 @@ export const rollbackChangesAction: ActionFunction = async ({ params }) => {
     await database.batchModifyDocs(delta as unknown as Operation);
     delete remoteCompareCache[workspaceId];
   } catch (err) {
-    const errorMessage =
-      err instanceof Error
-        ? err.message
-        : 'Unknown error while rolling back changes.';
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error while rolling back changes.';
     return {
       error: errorMessage,
     };
   }
 
-  return redirect(
-    `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug`
-  );
+  return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug`);
 };
 
-export const restoreChangesAction: ActionFunction = async ({
-  request,
-  params,
-}) => {
+export const restoreChangesAction: ActionFunction = async ({ request, params }) => {
   const { organizationId, projectId, workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace Id is required');
   const formData = await request.formData();
@@ -666,24 +609,16 @@ export const restoreChangesAction: ActionFunction = async ({
     await database.batchModifyDocs(delta as unknown as Operation);
     delete remoteCompareCache[workspaceId];
   } catch (err) {
-    const errorMessage =
-      err instanceof Error
-        ? err.message
-        : 'Unknown error while restoring changes.';
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error while restoring changes.';
     return {
       error: errorMessage,
     };
   }
 
-  return redirect(
-    `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug`
-  );
+  return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug`);
 };
 
-export const stageChangesAction: ActionFunction = async ({
-  request,
-  params,
-}) => {
+export const stageChangesAction: ActionFunction = async ({ request, params }) => {
   const { workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace Id is required');
   const data = await request.json();
@@ -709,10 +644,7 @@ export const stageChangesAction: ActionFunction = async ({
   return null;
 };
 
-export const unstageChangesAction: ActionFunction = async ({
-  request,
-  params,
-}) => {
+export const unstageChangesAction: ActionFunction = async ({ request, params }) => {
   const { workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace Id is required');
   const data = await request.json();
@@ -738,10 +670,7 @@ export const unstageChangesAction: ActionFunction = async ({
   return null;
 };
 
-export const createSnapshotAction: ActionFunction = async ({
-  request,
-  params,
-}) => {
+export const createSnapshotAction: ActionFunction = async ({ request, params }) => {
   const { workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace Id is required');
   const formData = await request.formData();
@@ -754,10 +683,7 @@ export const createSnapshotAction: ActionFunction = async ({
     await vcs.takeSnapshot(message);
     delete remoteCompareCache[workspaceId];
   } catch (err) {
-    const errorMessage =
-      err instanceof Error
-        ? err.message
-        : 'Unknown error while creating snapshot.';
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error while creating snapshot.';
     return {
       error: errorMessage,
     };
@@ -766,10 +692,7 @@ export const createSnapshotAction: ActionFunction = async ({
   return null;
 };
 
-export const createSnapshotAndPushAction: ActionFunction = async ({
-  request,
-  params,
-}) => {
+export const createSnapshotAndPushAction: ActionFunction = async ({ request, params }) => {
   const { projectId, workspaceId } = params;
   invariant(typeof projectId === 'string', 'Project Id is required');
   invariant(typeof workspaceId === 'string', 'Workspace Id is required');
@@ -790,10 +713,7 @@ export const createSnapshotAndPushAction: ActionFunction = async ({
     });
     delete remoteCompareCache[workspaceId];
   } catch (err) {
-    const errorMessage =
-      err instanceof Error
-        ? err.message
-        : 'Unknown error while creating snapshot.';
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error while creating snapshot.';
     return {
       error: errorMessage,
     };

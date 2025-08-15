@@ -1,8 +1,9 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import * as protoLoader from '@grpc/proto-loader';
-import fs from 'fs';
-import path from 'path';
 import React, { type FC, useEffect, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams } from 'react-router';
 
 import { type ChangeBufferEvent, database as db } from '../../../common/database';
 import { selectFileOrFolder } from '../../../common/select-file-or-folder';
@@ -23,7 +24,6 @@ const tryToSelectFilePath = async () => {
     const { filePath, canceled } = await selectFileOrFolder({ itemTypes: ['file'], extensions: ['proto'] });
     if (!canceled && filePath) {
       return filePath;
-
     }
   } catch (error) {
     showError({ error });
@@ -35,7 +35,6 @@ const tryToSelectFolderPath = async () => {
     const { filePath, canceled } = await selectFileOrFolder({ itemTypes: ['directory'], extensions: ['proto'] });
     if (!canceled && filePath) {
       return filePath;
-
     }
   } catch (error) {
     showError({ error });
@@ -62,10 +61,16 @@ const isProtofileValid = async (filePath: string) => {
   }
 };
 
-const traverseDirectory = (dir: ProtoDirectory, files: ProtoFile[], directories: ProtoDirectory[]): ExpandedProtoDirectory => ({
+const traverseDirectory = (
+  dir: ProtoDirectory,
+  files: ProtoFile[],
+  directories: ProtoDirectory[],
+): ExpandedProtoDirectory => ({
   dir,
   files: files.filter(pf => pf.parentId === dir._id),
-  subDirs: directories.filter(pd => pd.parentId === dir._id).map(subDir => traverseDirectory(subDir, files, directories)),
+  subDirs: directories
+    .filter(pd => pd.parentId === dir._id)
+    .map(subDir => traverseDirectory(subDir, files, directories)),
 });
 
 const getProtoDirectories = async (workspaceId: string) => {
@@ -99,9 +104,9 @@ export interface Props {
   reloadRequests: (requestIds: string[]) => void;
 }
 
-export const ProtoFilesModal: FC<Props> = ({ defaultId, onHide, onSave, reloadRequests }) => {
+export const ProtoFilesModal: FC<Props> = ({ defaultId, onHide, onSave }) => {
   const modalRef = useRef<ModalHandle>(null);
-  const { workspaceId } = useParams() as { workspaceId: string };
+  const { workspaceId } = useParams() as { workspaceId: string; requestId: string };
 
   const [selectedId, setSelectedId] = useState(defaultId);
   const [protoDirectories, setProtoDirectories] = useState<ExpandedProtoDirectory[]>([]);
@@ -205,7 +210,7 @@ export const ProtoFilesModal: FC<Props> = ({ defaultId, onHide, onSave, reloadRe
     if (!filePath) {
       return;
     }
-    if (!await isProtofileValid(filePath)) {
+    if (!(await isProtofileValid(filePath))) {
       return;
     }
     const contents = await fs.promises.readFile(filePath, 'utf-8');
@@ -216,18 +221,19 @@ export const ProtoFilesModal: FC<Props> = ({ defaultId, onHide, onSave, reloadRe
     const impacted = await models.grpcRequest.findByProtoFileId(updatedFile._id);
     const requestIds = impacted.map(g => g._id);
     if (requestIds?.length) {
-      requestIds.forEach(requestId => window.main.grpc.cancel(requestId));
-      reloadRequests(requestIds);
+      requestIds.forEach(async requestId => window.main.grpc.cancel(requestId));
     }
   };
 
   const handleDeleteDirectory = (protoDirectory: ProtoDirectory) => {
     showAlert({
       title: `Delete ${protoDirectory.name}`,
-      message: (<span>
-        Really delete <strong>{protoDirectory.name}</strong> and all proto files contained within?
-        All requests that use these proto files will stop working.
-      </span>),
+      message: (
+        <span>
+          Really delete <strong>{protoDirectory.name}</strong> and all proto files contained within? All requests that
+          use these proto files will stop working.
+        </span>
+      ),
       addCancel: true,
       onConfirm: async () => {
         models.protoDirectory.remove(protoDirectory);
@@ -238,10 +244,11 @@ export const ProtoFilesModal: FC<Props> = ({ defaultId, onHide, onSave, reloadRe
   const handleDeleteFile = (protoFile: ProtoFile) => {
     showAlert({
       title: `Delete ${protoFile.name}`,
-      message: (<span>
-        Really delete <strong>{protoFile.name}</strong>? All requests that use this proto file will
-        stop working.
-      </span>),
+      message: (
+        <span>
+          Really delete <strong>{protoFile.name}</strong>? All requests that use this proto file will stop working.
+        </span>
+      ),
       addCancel: true,
       onConfirm: () => {
         models.protoFile.remove(protoFile);
@@ -256,7 +263,7 @@ export const ProtoFilesModal: FC<Props> = ({ defaultId, onHide, onSave, reloadRe
     if (!filePath) {
       return;
     }
-    if (!await isProtofileValid(filePath)) {
+    if (!(await isProtofileValid(filePath))) {
       return;
     }
     const contents = await fs.promises.readFile(filePath, 'utf-8');
@@ -282,10 +289,7 @@ export const ProtoFilesModal: FC<Props> = ({ defaultId, onHide, onSave, reloadRe
             >
               Add Directory
             </AsyncButton>
-            <AsyncButton
-              onClick={handleAddFile}
-              loadingNode={<i className="fa fa-spin fa-refresh" />}
-            >
+            <AsyncButton onClick={handleAddFile} loadingNode={<i className="fa fa-spin fa-refresh" />}>
               Add Proto File
             </AsyncButton>
           </span>
@@ -294,6 +298,7 @@ export const ProtoFilesModal: FC<Props> = ({ defaultId, onHide, onSave, reloadRe
           protoDirectories={protoDirectories}
           selectedId={selectedId}
           handleSelect={id => setSelectedId(id)}
+          handleUnselect={() => setSelectedId('')}
           handleUpdate={handleUpdate}
           handleDelete={handleDeleteFile}
           handleDeleteDirectory={handleDeleteDirectory}
@@ -305,16 +310,15 @@ export const ProtoFilesModal: FC<Props> = ({ defaultId, onHide, onSave, reloadRe
             className="btn"
             onClick={event => {
               event.preventDefault();
-              if (typeof onSave === 'function' && selectedId) {
-                onSave(selectedId);
+              if (typeof onSave === 'function') {
+                onSave(selectedId || '');
               }
             }}
-            disabled={!selectedId}
           >
             Save
           </button>
         </div>
       </ModalFooter>
-    </Modal >
+    </Modal>
   );
 };

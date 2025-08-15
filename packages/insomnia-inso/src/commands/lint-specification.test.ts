@@ -1,10 +1,10 @@
-import path from 'path';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { lintSpecification } from './lint-specification';
 
 describe('lint specification', () => {
-
   const specContent = `openapi: '3.0.2'
 info:
   title: Sample Spec
@@ -66,7 +66,8 @@ paths:
       responses:
         '200':
           description: OK
-`, rulesetFileName,
+`,
+      rulesetFileName,
     });
     expect(result.isValid).toBe(true);
   });

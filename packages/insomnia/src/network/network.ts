@@ -1,58 +1,77 @@
-import clone from 'clone';
-import fs from 'fs';
-import type { ExecutionOption, RequestContext, RequestTestResult } from 'insomnia-sdk';
-import orderedJSON from 'json-order';
-import { join as pathJoin } from 'path';
+import fs from 'node:fs';
+import { join as pathJoin } from 'node:path';
 
+import clone from 'clone';
+import orderedJSON from 'json-order';
+
+import type {
+  ExecutionOption,
+  RequestContext,
+  RequestTestResult,
+} from '../../../insomnia-scripting-environment/src/objects';
+import { SINGLE_VALUE_HEADERS } from '../common/common-headers';
 import { JSON_ORDER_PREFIX, JSON_ORDER_SEPARATOR } from '../common/constants';
 import { database as db } from '../common/database';
-import {
-  generateId,
-  getContentTypeHeader,
-  getLocationHeader,
-  getSetCookieHeaders,
-} from '../common/misc';
-import type { ExtraRenderInfo, RenderedRequest, RenderPurpose, RequestAndContext } from '../common/render';
-import {
-  getRenderedRequestAndContext,
-  RENDER_PURPOSE_NO_RENDER,
-} from '../common/render';
+import { generateId, getContentTypeHeader, getLocationHeader, getSetCookieHeaders } from '../common/misc';
+import { getRenderedRequestAndContext } from '../common/render';
+import { ascendingFirstIndexStringSort } from '../common/sorting';
 import type { HeaderResult, ResponsePatch, ResponseTimelineEntry } from '../main/network/libcurl-promise';
 import * as models from '../models';
 import type { CaCertificate } from '../models/ca-certificate';
 import type { ClientCertificate } from '../models/client-certificate';
 import type { Cookie, CookieJar } from '../models/cookie-jar';
-import type { Environment, UserUploadEnvironment } from '../models/environment';
+import {
+  type Environment,
+  EnvironmentType,
+  getKVPairFromData,
+  type UserUploadEnvironment,
+  vaultEnvironmentPath,
+} from '../models/environment';
 import type { MockRoute } from '../models/mock-route';
 import type { MockServer } from '../models/mock-server';
 import { isProject, type Project } from '../models/project';
-import { isRequest, type Request, type RequestAuthentication, type RequestHeader, type RequestParameter } from '../models/request';
+import {
+  type BaseRequest,
+  isRequest,
+  type Request,
+  type RequestAuthentication,
+  type RequestHeader,
+  type RequestParameter,
+} from '../models/request';
 import { isRequestGroup, type RequestGroup } from '../models/request-group';
 import type { Settings } from '../models/settings';
 import type { WebSocketRequest } from '../models/websocket-request';
 import { isWorkspace, type Workspace } from '../models/workspace';
 import * as pluginContexts from '../plugins/context/index';
 import * as plugins from '../plugins/index';
+import { RenderError } from '../templating/render-error';
+import type { RenderedRequest, RenderPurpose } from '../templating/types';
+import { maskOrDecryptVaultDataIfNecessary } from '../templating/utils';
+import { defaultSendActionRuntime, type SendActionRuntime } from '../ui/routes/request';
 import { invariant } from '../utils/invariant';
 import { serializeNDJSON } from '../utils/ndjson';
-import {
-  buildQueryStringFromParams,
-  joinUrlAndQueryString,
-  smartEncodeUrl,
-} from '../utils/url/querystring';
+import { buildQueryStringFromParams, joinUrlAndQueryString, smartEncodeUrl } from '../utils/url/querystring';
 import { getAuthHeader, getAuthObjectOrNull, getAuthQueryParams, isAuthEnabled } from './authentication';
 import { cancellableCurlRequest, cancellableRunScript } from './cancellation';
 import { filterClientCertificates } from './certificate';
 import { runScriptConcurrently, type TransformedExecuteScriptContext } from './concurrency';
 import { addSetCookiesToToughCookieJar } from './set-cookie-util';
 
-export const getOrInheritAuthentication = ({ request, requestGroups }: { request: Request | WebSocketRequest; requestGroups: RequestGroup[] }): RequestAuthentication | {} => {
+export const getOrInheritAuthentication = ({
+  request,
+  requestGroups,
+}: {
+  request: Request | WebSocketRequest;
+  requestGroups: RequestGroup[];
+}): RequestAuthentication | {} => {
   const hasValidAuth = getAuthObjectOrNull(request.authentication) && isAuthEnabled(request.authentication);
   if (hasValidAuth) {
     return request.authentication;
   }
   const hasParentFolders = requestGroups.length > 0;
-  const closestParentFolderWithAuth = requestGroups.find(({ authentication }) => getAuthObjectOrNull(authentication) && isAuthEnabled(authentication));
+  const closestParentFolderWithAuth = requestGroups.find(
+    ({ authentication }) => getAuthObjectOrNull(authentication) && isAuthEnabled(authentication),
+  );
   const closestAuth = getAuthObjectOrNull(closestParentFolderWithAuth?.authentication);
   const shouldCheckFolderAuth = hasParentFolders && closestAuth;
   if (shouldCheckFolderAuth) {
@@ -62,15 +81,40 @@ export const getOrInheritAuthentication = ({ request, requestGroups }: { request
   // if no auth is specified on request or folders, default to none
   return { type: 'none' };
 };
-export function getOrInheritHeaders({ request, requestGroups }: { request: Request; requestGroups: RequestGroup[] }): RequestHeader[] {
-  // recurse over each parent folder to append headers
-  // in case of duplicate, node-libcurl joins on comma
-  const headers = requestGroups
-    .reverse()
-    .map(({ headers }) => headers || [])
-    .flat();
-  // if parent has foo: bar and child has foo: baz, request will have foo: bar, baz
-  return [...headers, ...request.headers];
+export function getOrInheritHeaders({
+  request,
+  requestGroups,
+}: {
+  request: Pick<BaseRequest, 'headers'>;
+  requestGroups: Pick<RequestGroup, 'headers'>[];
+}): RequestHeader[] {
+  const httpHeaders = new Map<string, string>();
+  const originalCaseMap = new Map<string, string>();
+  // parent folders, then child folders, then request
+  const headerContexts = [...requestGroups.reverse(), request];
+  const headers = headerContexts.flatMap(({ headers }) => headers || []);
+  headers.forEach(({ name, value, disabled }) => {
+    if (disabled || !name.trim()) {
+      return;
+    }
+    const normalizedCase = name.toLowerCase();
+    // preserves the casing of the last header with the same name
+    originalCaseMap.set(normalizedCase, name);
+    const isStrictValueHeader = SINGLE_VALUE_HEADERS.includes(normalizedCase);
+    if (isStrictValueHeader) {
+      httpHeaders.set(normalizedCase, value);
+      return;
+    }
+    // appending will join matching header values with a comma
+    if (httpHeaders.has(normalizedCase)) {
+      httpHeaders.set(normalizedCase, `${httpHeaders.get(normalizedCase)}, ${value}`);
+      return;
+    }
+    httpHeaders.set(normalizedCase, value);
+  });
+  return Array.from(httpHeaders.entries())
+    .sort(ascendingFirstIndexStringSort)
+    .map(([name, value]) => ({ name: originalCaseMap.get(name)!, value }));
 }
 // (only used for getOAuth2 token) Intended to gather all required database objects and initialize ids
 export const fetchRequestGroupData = async (requestGroupId: string) => {
@@ -92,8 +136,8 @@ export const fetchRequestGroupData = async (requestGroupId: string) => {
   // NOTE: parent folders wont be checked in here since we only use it for oauth2 requests right now, so they are discarded in that code path
   // fallback to base environment
   const activeEnvironmentId = workspaceMeta.activeEnvironmentId;
-  const activeEnvironment = activeEnvironmentId && await models.environment.getById(activeEnvironmentId);
-  const environment = activeEnvironment || await models.environment.getOrCreateForParentId(workspace._id);
+  const activeEnvironment = activeEnvironmentId && (await models.environment.getById(activeEnvironmentId));
+  const environment = activeEnvironment || (await models.environment.getOrCreateForParentId(workspace._id));
   invariant(environment, 'failed to find environment ' + activeEnvironmentId);
 
   const settings = await models.settings.get();
@@ -101,66 +145,91 @@ export const fetchRequestGroupData = async (requestGroupId: string) => {
   const clientCertificates = await models.clientCertificate.findByParentId(workspaceId);
   const caCert = await models.caCertificate.findByParentId(workspaceId);
   const responseId = generateId('res');
-  const responsesDir = pathJoin((process.type === 'renderer' ? window : require('electron')).app.getPath('userData'), 'responses');
+  const responsesDir = pathJoin(
+    (process.type === 'renderer' ? window : require('electron')).app.getPath('userData'),
+    'responses',
+  );
   const timelinePath = pathJoin(responsesDir, responseId + '.timeline');
   return { environment, settings, clientCertificates, caCert, activeEnvironmentId, timelinePath, responseId };
 };
+
 // Intended to gather all required database objects and initialize ids
-export const fetchRequestData = async (requestId: string) => {
+export const fetchRequestData = async (
+  requestId: string,
+  // Override the active environment id to use for the request
+  overrideEnvironmentId?: string,
+) => {
   const request = await models.request.getById(requestId);
   invariant(request, 'failed to find request ' + requestId);
-  const ancestors = await db.withAncestors<Request | RequestGroup | Workspace | Project | MockRoute | MockServer>(request, [
-    models.request.type,
-    models.requestGroup.type,
-    models.workspace.type,
-    models.project.type,
-    models.mockRoute.type,
-    models.mockServer.type,
-  ]);
+  const ancestors = await db.withAncestors<Request | RequestGroup | Workspace | Project | MockRoute | MockServer>(
+    request,
+    [
+      models.request.type,
+      models.requestGroup.type,
+      models.workspace.type,
+      models.project.type,
+      models.mockRoute.type,
+      models.mockServer.type,
+    ],
+  );
+
   const workspaceDoc = ancestors.find(isWorkspace);
   invariant(workspaceDoc?._id, 'failed to find workspace');
   const workspaceId = workspaceDoc._id;
 
   const workspace = await models.workspace.getById(workspaceId);
   invariant(workspace, 'failed to find workspace');
-  const workspaceMeta = await models.workspaceMeta.getOrCreateByParentId(workspace._id);
-  // check for authentication overrides in parent folders
-  const requestGroups = ancestors.filter(isRequestGroup) as RequestGroup[];
-  request.authentication = getOrInheritAuthentication({ request, requestGroups });
-  request.headers = getOrInheritHeaders({ request, requestGroups });
-  // fallback to base environment
-  const activeEnvironmentId = workspaceMeta.activeEnvironmentId;
-  const activeEnvironment = activeEnvironmentId && await models.environment.getById(activeEnvironmentId);
-  // no active environment in workspaceMeta, fallback to workspace root environment as active environment
-  const environment = activeEnvironment || await models.environment.getOrCreateForParentId(workspace._id);
-  invariant(environment, 'failed to find environment ' + activeEnvironmentId);
+  const workspaceMeta = await models.workspaceMeta.getOrCreateByParentId(workspaceId);
+
+  const activeEnvironmentId = overrideEnvironmentId ?? workspaceMeta.activeEnvironmentId;
+  const activeEnvironment = activeEnvironmentId && (await models.environment.getById(activeEnvironmentId));
 
   const baseEnvironment = await models.environment.getOrCreateForParentId(workspaceId);
+  // no active environment in workspaceMeta, fallback to workspace root environment as active environment
+  const environment = activeEnvironment || baseEnvironment;
+  invariant(environment, 'failed to find environment ' + activeEnvironmentId);
+
   const cookieJar = await models.cookieJar.getOrCreateForParentId(workspaceId);
 
   let activeGlobalEnvironment: Environment | undefined = undefined;
+  let activeGlobalBaseEnvironment: Environment | undefined = undefined;
   if (workspaceMeta?.activeGlobalEnvironmentId) {
-    activeGlobalEnvironment = await models.environment.getById(workspaceMeta.activeGlobalEnvironmentId) || undefined;
+    activeGlobalEnvironment = (await models.environment.getById(workspaceMeta.activeGlobalEnvironmentId)) || undefined;
+    const activeGlobalEnvironmentParentId = activeGlobalEnvironment?.parentId || '';
+    if (activeGlobalEnvironmentParentId.startsWith('wrk_')) {
+      // activeGlobalEnvironment is a base global environment
+      activeGlobalBaseEnvironment = activeGlobalEnvironment;
+    } else if (activeGlobalEnvironmentParentId.startsWith('env_')) {
+      // activeGlobalEnvironment is a sub global environment
+      activeGlobalBaseEnvironment = (await models.environment.getById(activeGlobalEnvironmentParentId)) || undefined;
+    }
   }
 
   const settings = await models.settings.get();
   invariant(settings, 'failed to create settings');
   const clientCertificates = await models.clientCertificate.findByParentId(workspaceId);
   const caCert = await models.caCertificate.findByParentId(workspaceId);
+
   const responseId = generateId('res');
-  const responsesDir = pathJoin((process.type === 'renderer' ? window : require('electron')).app.getPath('userData'), 'responses');
+  const responsesDir = pathJoin(
+    process.env['INSOMNIA_DATA_PATH'] ||
+      (process.type === 'renderer' ? window : require('electron')).app.getPath('userData'),
+    'responses',
+  );
   const timelinePath = pathJoin(responsesDir, responseId + '.timeline');
 
   return {
     request,
     environment,
     baseEnvironment,
-    cookieJar,
     activeGlobalEnvironment,
+    activeGlobalBaseEnvironment,
+    activeEnvironmentId: environment._id,
     settings,
     clientCertificates,
     caCert,
-    activeEnvironmentId: activeEnvironmentId || environment._id,
+    cookieJar,
+    workspace,
     timelinePath,
     responseId,
     ancestors,
@@ -173,6 +242,7 @@ export const tryToExecutePreRequestScript = async (
     environment,
     baseEnvironment,
     activeGlobalEnvironment,
+    activeGlobalBaseEnvironment,
     cookieJar,
     settings,
     clientCertificates,
@@ -184,16 +254,26 @@ export const tryToExecutePreRequestScript = async (
   userUploadEnvironment?: UserUploadEnvironment,
   iteration?: number,
   iterationCount?: number,
+  runtime?: SendActionRuntime,
 ) => {
-
   const requestGroups = ancestors.filter(doc => isRequest(doc) || isRequestGroup(doc)) as RequestGroup[];
-  const folderScripts = requestGroups.reverse()
+  const folderScripts = requestGroups
+    .reverse()
     .filter(group => group?.preRequestScript)
-    .map((group, i) => `const fn${i} = async ()=>{
+    .map(
+      (group, i) => `const fn${i} = async ()=>{
         ${group.preRequestScript}
       }
       await fn${i}();
-  `);
+  `,
+    );
+  const originalRequestGroups = requestGroups.filter(group => isRequestGroup(group));
+  const parentFolders = originalRequestGroups.map(group => ({
+    id: group._id,
+    name: group.name,
+    environment: group.environment,
+  }));
+
   if (folderScripts.length === 0) {
     return {
       request,
@@ -203,8 +283,12 @@ export const tryToExecutePreRequestScript = async (
       settings,
       cookieJar,
       globals: activeGlobalEnvironment,
+      baseGlobals: activeGlobalBaseEnvironment,
       userUploadEnvironment,
       requestTestResults: new Array<RequestTestResult>(),
+      transientVariables,
+      logs: '',
+      parentFolders,
     };
   }
   const joinedScript = [...folderScripts].join('\n');
@@ -219,6 +303,7 @@ export const tryToExecutePreRequestScript = async (
     clientCertificates,
     cookieJar,
     globals: activeGlobalEnvironment,
+    baseGlobals: activeGlobalBaseEnvironment,
     userUploadEnvironment,
     iteration,
     iterationCount,
@@ -226,6 +311,8 @@ export const tryToExecutePreRequestScript = async (
     eventName: 'prerequest',
     settings,
     transientVariables,
+    runtime,
+    parentFolders,
   });
   if (!mutatedContext || 'error' in mutatedContext) {
     return {
@@ -237,10 +324,20 @@ export const tryToExecutePreRequestScript = async (
       settings,
       cookieJar,
       globals: activeGlobalEnvironment,
+      baseGlobals: activeGlobalBaseEnvironment,
       requestTestResults: new Array<RequestTestResult>(),
+      parentFolders,
     };
   }
-  await savePatchesMadeByScript(mutatedContext, environment, baseEnvironment, activeGlobalEnvironment);
+  await savePatchesMadeByScript({
+    mutatedContext,
+    environment,
+    baseEnvironment,
+    activeGlobalEnvironment,
+    activeGlobalBaseEnvironment,
+    originalRequestGroups,
+  });
+
   return {
     request: mutatedContext.request,
     environment: mutatedContext.environment,
@@ -248,11 +345,13 @@ export const tryToExecutePreRequestScript = async (
     clientCertificates: mutatedContext.clientCertificates || clientCertificates,
     settings: mutatedContext.settings || settings,
     globals: mutatedContext.globals,
+    baseGlobals: mutatedContext.baseGlobals,
     cookieJar: mutatedContext.cookieJar,
     requestTestResults: mutatedContext.requestTestResults,
     userUploadEnvironment: mutatedContext.userUploadEnvironment,
     execution: mutatedContext.execution,
     transientVariables: mutatedContext.transientVariables,
+    parentFolders: mutatedContext.parentFolders,
   };
 };
 
@@ -260,13 +359,24 @@ export const tryToExecutePreRequestScript = async (
 // The rule for the global environment:
 //  - If no global environment is seleted, no operation
 //  - If one global environment is selected, it persists content to the selected global environment (base or sub).
-export async function savePatchesMadeByScript(
-  mutatedContext: TransformedExecuteScriptContext,
-  environment: Environment,
-  baseEnvironment: Environment,
-  activeGlobalEnvironment: Environment | undefined,
-  responseCookies?: Cookie[],
-) {
+export async function savePatchesMadeByScript(patches: {
+  mutatedContext: TransformedExecuteScriptContext;
+  environment: Environment;
+  baseEnvironment: Environment;
+  activeGlobalEnvironment: Environment | undefined;
+  activeGlobalBaseEnvironment: Environment | undefined;
+  originalRequestGroups: RequestGroup[];
+  responseCookies?: Cookie[];
+}) {
+  const {
+    mutatedContext,
+    environment,
+    baseEnvironment,
+    activeGlobalEnvironment,
+    activeGlobalBaseEnvironment,
+    originalRequestGroups,
+    responseCookies,
+  } = patches;
   if (!mutatedContext) {
     return;
   }
@@ -274,47 +384,62 @@ export async function savePatchesMadeByScript(
   // persist updated cookieJar if needed
   if (mutatedContext.cookieJar) {
     // merge cookies from response to the cookiejar, or cookies from response will not be persisted
-    await models.cookieJar.update(
-      mutatedContext.cookieJar,
-      { cookies: [...(responseCookies || []), ...mutatedContext.cookieJar.cookies] },
-    );
+    await models.cookieJar.update(mutatedContext.cookieJar, {
+      cookies: [...(responseCookies || []), ...mutatedContext.cookieJar.cookies],
+    });
   }
   // when base environment is activated, `mutatedContext.environment` points to it
   const isActiveEnvironmentBase = mutatedContext.environment?._id === baseEnvironment._id;
   const hasEnvironmentAndIsNotBase = mutatedContext.environment && !isActiveEnvironmentBase;
+  const hasGlobalEnvironmentAndIsNotBase =
+    mutatedContext.globals && mutatedContext.globals?._id !== activeGlobalBaseEnvironment?._id;
+  const updateEnvironment = async (originEnvironment: Environment, mutatedContextEnvironment: Environment) => {
+    const { environmentType } = originEnvironment;
+    const { data, dataPropertyOrder } = mutatedContextEnvironment;
+    await models.environment.update(originEnvironment, {
+      data,
+      dataPropertyOrder,
+      // also update kvPairData when environment type is table view(kv pair)
+      ...(environmentType === EnvironmentType.KVPAIR && {
+        kvPairData: getKVPairFromData(data, dataPropertyOrder),
+      }),
+    });
+  };
+
   if (hasEnvironmentAndIsNotBase) {
-    await models.environment.update(
-      environment,
-      {
-        data: mutatedContext.environment.data,
-        dataPropertyOrder: mutatedContext.environment.dataPropertyOrder,
-      }
-    );
+    await updateEnvironment(environment, mutatedContext.environment);
   }
   if (mutatedContext.baseEnvironment) {
-    await models.environment.update(
-      baseEnvironment,
-      {
-        data: mutatedContext.baseEnvironment.data,
-        dataPropertyOrder: mutatedContext.baseEnvironment.dataPropertyOrder,
-      }
-    );
+    await updateEnvironment(baseEnvironment, mutatedContext.baseEnvironment);
   }
 
-  if (activeGlobalEnvironment && mutatedContext) {
+  if (activeGlobalEnvironment && hasGlobalEnvironmentAndIsNotBase) {
     invariant(mutatedContext.globals, 'globals must be defined when there is selected one');
-    await models.environment.update(
-      activeGlobalEnvironment,
-      {
-        data: mutatedContext.globals.data,
-        dataPropertyOrder: mutatedContext.globals.dataPropertyOrder,
-      }
-    );
+    await updateEnvironment(activeGlobalEnvironment, mutatedContext.globals);
   }
+
+  if (activeGlobalBaseEnvironment) {
+    invariant(mutatedContext.baseGlobals, 'baseGlobals must be defined when there is active global base environment');
+    await updateEnvironment(activeGlobalBaseEnvironment, mutatedContext.baseGlobals);
+  }
+
+  mutatedContext.parentFolders.forEach(mutatedFolder => {
+    const originalFolder = originalRequestGroups.find(originalFolder => originalFolder._id === mutatedFolder.id);
+    if (originalFolder) {
+      models.requestGroup.update(originalFolder, {
+        environment: mutatedFolder.environment,
+        // also update kvPairData when folder environment type is table view(kv pair)
+        ...(originalFolder.environmentType === EnvironmentType.KVPAIR && {
+          kvPairData: getKVPairFromData(mutatedFolder.environment, originalFolder.environmentPropertyOrder),
+        }),
+      });
+    }
+  });
 }
 
 export const tryToExecuteScript = async (context: RequestAndContextAndOptionalResponse) => {
-  const { script,
+  const {
+    script,
     request,
     environment,
     timelinePath,
@@ -324,6 +449,7 @@ export const tryToExecuteScript = async (context: RequestAndContextAndOptionalRe
     cookieJar,
     response,
     globals,
+    baseGlobals,
     userUploadEnvironment,
     iteration,
     iterationCount,
@@ -331,19 +457,30 @@ export const tryToExecuteScript = async (context: RequestAndContextAndOptionalRe
     eventName,
     execution,
     transientVariables,
+    runtime,
+    parentFolders,
+    settings,
   } = context;
   invariant(script, 'script must be provided');
 
-  const settings = await models.settings.get();
   // location is the complete path of a request, including project, collection and folder(if have).
   const requestLocation = ancestors
     .filter(doc => isRequest(doc) || isRequestGroup(doc) || isWorkspace(doc) || isProject(doc))
     .reverse()
     .map(doc => doc.name);
+  let vault = undefined;
+  if (globals && vaultEnvironmentPath in globals.data && settings.enableVaultInScripts) {
+    // decrypt and set vault in insomnia sdk if necessary
+    globals.data[vaultEnvironmentPath] = await maskOrDecryptVaultDataIfNecessary(
+      globals.data[vaultEnvironmentPath],
+      'script',
+    );
+    vault = globals.data[vaultEnvironmentPath];
+  }
 
   try {
     const fn = process.type === 'renderer' ? runScriptConcurrently : cancellableRunScript;
-    const originalOutput = await fn({
+    const output = await fn({
       script,
       context: {
         request,
@@ -370,22 +507,35 @@ export const tryToExecuteScript = async (context: RequestAndContextAndOptionalRe
           iteration,
         },
         response,
-        globals: globals?.data || undefined,
-        iterationData: userUploadEnvironment ? {
-          name: userUploadEnvironment.name,
-          data: userUploadEnvironment.data || {},
-        } : undefined,
+        vault,
+        globals: globals && {
+          id: globals._id,
+          name: globals.name,
+          data: globals.data || {},
+        },
+        baseGlobals: baseGlobals && {
+          id: baseGlobals._id,
+          name: baseGlobals.name,
+          data: baseGlobals.data || {},
+        },
+        iterationData: userUploadEnvironment
+          ? {
+              name: userUploadEnvironment.name,
+              data: userUploadEnvironment.data || {},
+            }
+          : undefined,
         execution: {
           ...execution, // keep some existing properties in the after-response script from the pre-request script
           location: requestLocation,
         },
         transientVariables,
+        logs: [],
+        parentFolders,
       },
     });
-    if ('error' in originalOutput) {
-      return { error: `Script executor returns error: ${originalOutput.error}` };
+    if ('error' in output) {
+      return { error: `Script executor returns error: ${output.error}` };
     }
-    const output = originalOutput as RequestContext;
 
     const envPropertyOrder = orderedJSON.parse(
       JSON.stringify(output.environment.data),
@@ -405,12 +555,22 @@ export const tryToExecuteScript = async (context: RequestAndContextAndOptionalRe
 
     if (globals) {
       const globalEnvPropertyOrder = orderedJSON.parse(
-        JSON.stringify(output.globals || {}),
+        JSON.stringify(output.globals?.data || {}),
         JSON_ORDER_PREFIX,
         JSON_ORDER_SEPARATOR,
       );
-      globals.data = output.globals || {};
+      globals.data = output.globals?.data || {};
       globals.dataPropertyOrder = globalEnvPropertyOrder.map;
+    }
+
+    if (baseGlobals) {
+      const globalBaseEnvPropertyOrder = orderedJSON.parse(
+        JSON.stringify(output.baseGlobals?.data || {}),
+        JSON_ORDER_PREFIX,
+        JSON_ORDER_SEPARATOR,
+      );
+      baseGlobals.data = output.baseGlobals?.data || {};
+      baseGlobals.dataPropertyOrder = globalBaseEnvPropertyOrder.map;
     }
 
     if (userUploadEnvironment) {
@@ -421,6 +581,10 @@ export const tryToExecuteScript = async (context: RequestAndContextAndOptionalRe
       );
       userUploadEnvironment.data = output?.iterationData?.data || [];
       userUploadEnvironment.dataPropertyOrder = userUploadEnvPropertyOrder.map;
+    }
+
+    if (runtime) {
+      await runtime.appendTimeline(timelinePath, output.logs);
     }
 
     if (output?.transientVariables !== undefined) {
@@ -441,19 +605,22 @@ export const tryToExecuteScript = async (context: RequestAndContextAndOptionalRe
       clientCertificates: output.clientCertificates,
       cookieJar: output.cookieJar,
       globals,
+      baseGlobals,
       userUploadEnvironment,
       requestTestResults: output.requestTestResults,
       execution: output.execution,
       transientVariables,
+      parentFolders: output.parentFolders,
     };
   } catch (err) {
     await fs.promises.appendFile(
       timelinePath,
-      serializeNDJSON([{ value: err.message, name: 'Text', timestamp: Date.now() }])
+      serializeNDJSON([{ value: err.message, name: 'Text', timestamp: Date.now() }]),
     );
 
     const requestId = request._id;
-    const errMessage = err.stack ? `message: ${err.messsage}; stack: ${err.stack}` : err.message;
+    // stack trace is ignored as it is always from preload
+    const errMessage = err.message ? err.message : err;
     const responsePatch = {
       _id: responseId,
       parentId: requestId,
@@ -478,16 +645,20 @@ interface RequestContextForScript {
   clientCertificates: ClientCertificate[];
   cookieJar: CookieJar;
   ancestors: (Request | RequestGroup | Workspace | Project | MockRoute | MockServer)[];
-  globals?: Environment; // there could be no global environment
+  // there could be no global and no global base environment
+  globals?: Environment;
+  baseGlobals?: Environment;
   settings: Settings;
   execution?: ExecutionOption;
   transientVariables: Environment;
+  parentFolders: { id: string; name: string; environment: Record<string, any> }[];
 }
 
 type RequestAndContextAndResponse = RequestContextForScript & {
   response: sendCurlAndWriteTimelineError | sendCurlAndWriteTimelineResponse;
   iteration?: number;
   iterationCount?: number;
+  runtime: SendActionRuntime;
 };
 
 type RequestAndContextAndOptionalResponse = RequestContextForScript & {
@@ -497,17 +668,24 @@ type RequestAndContextAndOptionalResponse = RequestContextForScript & {
   iteration?: number;
   iterationCount?: number;
   eventName?: RequestContext['requestInfo']['eventName'];
+  runtime?: SendActionRuntime;
+  parentFolders: { id: string; name: string; environment: Record<string, any> }[];
 };
 
 export async function tryToExecuteAfterResponseScript(context: RequestAndContextAndResponse) {
   const requestGroups = context.ancestors.filter(doc => isRequest(doc) || isRequestGroup(doc)) as RequestGroup[];
-  const folderScripts = requestGroups.reverse()
+  const folderScripts = requestGroups
+    .reverse()
     .filter(group => group?.afterResponseScript)
-    .map((group, i) => `const fn${i} = async ()=>{
+    .map(
+      (group, i) => `const fn${i} = async ()=>{
         ${group.afterResponseScript}
       }
       await fn${i}();
-  `);
+  `,
+    );
+  const originalRequestGroups = requestGroups.filter(group => isRequestGroup(group));
+
   if (folderScripts.length === 0) {
     return {
       ...context,
@@ -527,9 +705,24 @@ export async function tryToExecuteAfterResponseScript(context: RequestAndContext
   const respondedWithoutError = context.response && !('error' in context.response);
   if (respondedWithoutError) {
     const resp = context.response as sendCurlAndWriteTimelineResponse;
-    await savePatchesMadeByScript(postMutatedContext, context.environment, context.baseEnvironment, context.globals, resp.cookies);
+    await savePatchesMadeByScript({
+      mutatedContext: postMutatedContext,
+      environment: context.environment,
+      baseEnvironment: context.baseEnvironment,
+      activeGlobalEnvironment: context.globals,
+      activeGlobalBaseEnvironment: context.baseGlobals,
+      originalRequestGroups: originalRequestGroups,
+      responseCookies: resp.cookies,
+    });
   } else {
-    await savePatchesMadeByScript(postMutatedContext, context.environment, context.baseEnvironment, context.globals);
+    await savePatchesMadeByScript({
+      mutatedContext: postMutatedContext,
+      environment: context.environment,
+      baseEnvironment: context.baseEnvironment,
+      activeGlobalEnvironment: context.globals,
+      activeGlobalBaseEnvironment: context.baseGlobals,
+      originalRequestGroups: originalRequestGroups,
+    });
   }
 
   return postMutatedContext;
@@ -548,13 +741,12 @@ export const tryToInterpolateRequest = async ({
   request: Request;
   environment: string | Environment;
   purpose?: RenderPurpose;
-  extraInfo?: ExtraRenderInfo;
+  extraInfo?: { requestChain: string[] };
   baseEnvironment?: Environment;
-    userUploadEnvironment?: UserUploadEnvironment;
-    transientVariables?: Environment;
+  userUploadEnvironment?: UserUploadEnvironment;
+  transientVariables?: Environment;
   ignoreUndefinedEnvVariable?: boolean;
-}
-) => {
+}) => {
   try {
     return await getRenderedRequestAndContext({
       request: request,
@@ -567,14 +759,17 @@ export const tryToInterpolateRequest = async ({
       ignoreUndefinedEnvVariable,
     });
   } catch (err) {
-    if ('type' in err && err.type === 'render') {
+    if (err instanceof RenderError) {
       throw err;
     }
     throw new Error(`Failed to render request: ${request._id}`);
   }
 };
 
-export const tryToTransformRequestWithPlugins = async (renderResult: RequestAndContext) => {
+export const tryToTransformRequestWithPlugins = async (renderResult: {
+  request: RenderedRequest;
+  context: Record<string, any>;
+}) => {
   const { request, context } = renderResult;
   try {
     return await _applyRequestPluginHooks(request, context);
@@ -601,6 +796,8 @@ export interface sendCurlAndWriteTimelineResponse extends ResponsePatch {
   timelinePath: string;
   statusMessage: string;
   cookies: Cookie[];
+  timeline: string[];
+  bytesRead?: number;
 }
 
 export async function sendCurlAndWriteTimeline(
@@ -610,15 +807,25 @@ export async function sendCurlAndWriteTimeline(
   settings: Settings,
   timelinePath: string,
   responseId: string,
+  runtime: SendActionRuntime = defaultSendActionRuntime,
 ): Promise<sendCurlAndWriteTimelineError | sendCurlAndWriteTimelineResponse> {
   const requestId = renderedRequest._id;
   const timeline: ResponseTimelineEntry[] = [];
   const authentication = renderedRequest.authentication as RequestAuthentication;
 
-  const { finalUrl, socketPath } = transformUrl(renderedRequest.url, renderedRequest.parameters, authentication, renderedRequest.settingEncodeUrl);
+  const { finalUrl, socketPath } = transformUrl(
+    renderedRequest.url,
+    renderedRequest.parameters,
+    authentication,
+    renderedRequest.settingEncodeUrl,
+  );
   timeline.push({ value: `Preparing request to ${finalUrl}`, name: 'Text', timestamp: Date.now() });
   timeline.push({ value: `Current time is ${new Date().toISOString()}`, name: 'Text', timestamp: Date.now() });
-  timeline.push({ value: `${renderedRequest.settingEncodeUrl ? 'Enable' : 'Disable'} automatic URL encoding`, name: 'Text', timestamp: Date.now() });
+  timeline.push({
+    value: `${renderedRequest.settingEncodeUrl ? 'Enable' : 'Disable'} automatic URL encoding`,
+    name: 'Text',
+    timestamp: Date.now(),
+  });
 
   if (!renderedRequest.settingSendCookies) {
     timeline.push({ value: 'Disable cookie sending due to user setting', name: 'Text', timestamp: Date.now() });
@@ -636,13 +843,16 @@ export async function sendCurlAndWriteTimeline(
   };
 
   // NOTE: conditionally use ipc bridge, renderer cannot import native modules directly
-  const nodejsCurlRequest = process.type === 'renderer'
-    ? cancellableCurlRequest
-    : (await import('../main/network/libcurl-promise')).curlRequest;
+  const nodejsCurlRequest =
+    process.type === 'renderer'
+      ? cancellableCurlRequest
+      : (await import('../main/network/libcurl-promise')).curlRequest;
   const output = await nodejsCurlRequest(requestOptions);
 
   if ('error' in output) {
-    await fs.promises.appendFile(timelinePath, serializeNDJSON(timeline));
+    if (runtime) {
+      await runtime.appendTimeline(timelinePath, serializeNDJSON(timeline).split('\n'));
+    }
 
     return {
       _id: responseId,
@@ -653,21 +863,31 @@ export async function sendCurlAndWriteTimeline(
       bytesRead: 0,
       statusMessage: output.statusMessage,
       timelinePath,
+      timeline: serializeNDJSON(timeline).split('\n'),
     };
   }
   const { patch, debugTimeline, headerResults, responseBodyPath } = output;
   // todo: move to main process
   debugTimeline.forEach(entry => timeline.push(entry));
   // transform output
-  const { cookies, rejectedCookies, totalSetCookies } = await extractCookies(headerResults, renderedRequest.cookieJar, finalUrl, renderedRequest.settingStoreCookies);
-  rejectedCookies.forEach(errorMessage => timeline.push({ value: `Rejected cookie: ${errorMessage}`, name: 'Text', timestamp: Date.now() }));
+  const { cookies, rejectedCookies, totalSetCookies } = await extractCookies(
+    headerResults,
+    renderedRequest.cookieJar,
+    finalUrl,
+    renderedRequest.settingStoreCookies,
+  );
+  rejectedCookies.forEach(errorMessage =>
+    timeline.push({ value: `Rejected cookie: ${errorMessage}`, name: 'Text', timestamp: Date.now() }),
+  );
   if (totalSetCookies) {
     await models.cookieJar.update(renderedRequest.cookieJar, { cookies });
     timeline.push({ value: `Saved ${totalSetCookies} cookies`, name: 'Text', timestamp: Date.now() });
   }
   const lastRedirect = headerResults[headerResults.length - 1];
 
-  await fs.promises.appendFile(timelinePath, serializeNDJSON(timeline));
+  if (runtime) {
+    await runtime.appendTimeline(timelinePath, serializeNDJSON(timeline).split('\n'));
+  }
 
   return {
     _id: responseId,
@@ -680,11 +900,17 @@ export async function sendCurlAndWriteTimeline(
     statusCode: lastRedirect.code,
     statusMessage: lastRedirect.reason,
     cookies,
+    timeline: serializeNDJSON(timeline).split('\n'),
     ...patch,
   };
 }
 
-export const responseTransform = async (patch: ResponsePatch, environmentId: string | null, renderedRequest: RenderedRequest, context: Record<string, any>) => {
+export const responseTransform = async (
+  patch: ResponsePatch,
+  environmentId: string | null,
+  renderedRequest: RenderedRequest,
+  context: Record<string, any>,
+) => {
   const response: ResponsePatch = {
     ...patch,
     // important for filter by responses
@@ -699,29 +925,42 @@ export const responseTransform = async (patch: ResponsePatch, environmentId: str
     console.log(`[network] Response failed req=${patch.parentId} err=${response.error || 'n/a'}`);
     return response;
   }
-  console.log(`[network] Response succeeded req=${patch.parentId} status=${response.statusCode || '?'}`,);
-  return await _applyResponsePluginHooks(
-    response,
-    renderedRequest,
-    context,
-  );
+  console.log(`[network] Response succeeded req=${patch.parentId} status=${response.statusCode || '?'}`);
+  return await _applyResponsePluginHooks(response, renderedRequest, context);
 };
-export const transformUrl = (url: string, params: RequestParameter[], authentication: RequestAuthentication, shouldEncode: boolean) => {
+export const transformUrl = (
+  url: string,
+  params: RequestParameter[],
+  authentication: RequestAuthentication,
+  shouldEncode: boolean,
+) => {
   const authQueryParam = getAuthQueryParams(authentication);
-  const customUrl = joinUrlAndQueryString(url, buildQueryStringFromParams(authQueryParam ? params.concat([authQueryParam]) : params, true, { strictNullHandling: true }));
+  const customUrl = joinUrlAndQueryString(
+    url,
+    buildQueryStringFromParams(authQueryParam ? params.concat([authQueryParam]) : params, true, {
+      strictNullHandling: true,
+    }),
+  );
   const isUnixSocket = customUrl.match(/https?:\/\/unix:\//);
   if (!isUnixSocket) {
     return { finalUrl: smartEncodeUrl(customUrl, shouldEncode, { strictNullHandling: true }) };
   }
   // URL prep will convert "unix:/path" hostname to "unix/path"
-  const match = smartEncodeUrl(customUrl, shouldEncode, { strictNullHandling: true }).match(/(https?:)\/\/unix:?(\/[^:]+):\/(.+)/);
+  const match = smartEncodeUrl(customUrl, shouldEncode, { strictNullHandling: true }).match(
+    /(https?:)\/\/unix:?(\/[^:]+):\/(.+)/,
+  );
   const protocol = (match && match[1]) || '';
   const socketPath = (match && match[2]) || '';
   const socketUrl = (match && match[3]) || '';
   return { finalUrl: `${protocol}//${socketUrl}`, socketPath };
 };
 
-const extractCookies = async (headerResults: HeaderResult[], cookieJar: any, finalUrl: string, settingStoreCookies: boolean) => {
+const extractCookies = async (
+  headerResults: HeaderResult[],
+  cookieJar: any,
+  finalUrl: string,
+  settingStoreCookies: boolean,
+) => {
   // add set-cookie headers to file(cookiejar) and database
   if (settingStoreCookies) {
     // supports many set-cookies over many redirects
@@ -730,7 +969,11 @@ const extractCookies = async (headerResults: HeaderResult[], cookieJar: any, fin
     const totalSetCookies = setCookieStrings.length;
     if (totalSetCookies) {
       const currentUrl = getCurrentUrl({ headerResults, finalUrl });
-      const { cookies, rejectedCookies } = await addSetCookiesToToughCookieJar({ setCookieStrings, currentUrl, cookieJar });
+      const { cookies, rejectedCookies } = await addSetCookiesToToughCookieJar({
+        setCookieStrings,
+        currentUrl,
+        cookieJar,
+      });
       const hasCookiesToPersist = totalSetCookies > rejectedCookies.length;
       if (hasCookiesToPersist) {
         return { cookies, rejectedCookies, totalSetCookies };
@@ -758,15 +1001,12 @@ export const getCurrentUrl = ({ headerResults, finalUrl }: { headerResults: any;
   }
 };
 
-async function _applyRequestPluginHooks(
-  renderedRequest: RenderedRequest,
-  renderedContext: Record<string, any>,
-) {
+async function _applyRequestPluginHooks(renderedRequest: RenderedRequest, renderedContext: Record<string, any>) {
   const newRenderedRequest = clone(renderedRequest);
 
   for (const { plugin, hook } of await plugins.getRequestHooks()) {
     const context = {
-      ...(pluginContexts.app.init(RENDER_PURPOSE_NO_RENDER) as Record<string, any>),
+      ...(pluginContexts.app.init('no-render') as Record<string, any>),
       ...pluginContexts.data.init(renderedContext.getProjectId()),
       ...(pluginContexts.store.init(plugin) as Record<string, any>),
       ...(pluginContexts.request.init(newRenderedRequest, renderedContext) as Record<string, any>),
@@ -794,7 +1034,7 @@ async function _applyResponsePluginHooks(
     const newRequest = clone(renderedRequest);
     for (const { plugin, hook } of await plugins.getResponseHooks()) {
       const context = {
-        ...(pluginContexts.app.init(RENDER_PURPOSE_NO_RENDER) as Record<string, any>),
+        ...(pluginContexts.app.init('no-render') as Record<string, any>),
         ...pluginContexts.data.init(renderedContext.getProjectId()),
         ...(pluginContexts.store.init(plugin) as Record<string, any>),
         ...(pluginContexts.response.init(newResponse) as Record<string, any>),
@@ -822,5 +1062,4 @@ async function _applyResponsePluginHooks(
       settingStoreCookies: renderedRequest.settingStoreCookies,
     };
   }
-
 }

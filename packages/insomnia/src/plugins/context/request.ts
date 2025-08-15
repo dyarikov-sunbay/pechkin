@@ -1,21 +1,14 @@
 import * as misc from '../../common/misc';
-import type { RenderedRequest } from '../../common/render';
 import type { RequestBody } from '../../models/request';
-export function filterParameters<T extends { name: string; value: string }>(
-  parameters: T[],
-  name: string,
-): T[] {
+import type { RenderedRequest } from '../../templating/types';
+export function filterParameters<T extends { name: string; value: string }>(parameters: T[], name: string): T[] {
   if (!Array.isArray(parameters) || !name) {
     return [];
   }
 
   return parameters.filter(h => (!h || !h.name ? false : h.name === name));
 }
-export function init(
-  renderedRequest: RenderedRequest | null,
-  renderedContext: Record<string, any>,
-  readOnly = false,
-) {
+export function init(renderedRequest: RenderedRequest | null, renderedContext: Record<string, any>, readOnly = false) {
   if (!renderedRequest) {
     throw new Error('contexts.request initialized without request');
   }
@@ -58,9 +51,7 @@ export function init(
       }
     },
 
-    getEnvironmentVariable(
-      name: string,
-    ): string | number | boolean | Record<string, any> | any[] | null {
+    getEnvironmentVariable(name: string): string | number | boolean | Record<string, any> | any[] | null {
       return renderedContext[name];
     },
 
@@ -95,9 +86,8 @@ export function init(
         // Use the last header if there are multiple of the same
         const header = headers[headers.length - 1];
         return header.value || '';
-      } else {
-        return null;
       }
+      return null;
     },
 
     getHeaders() {
@@ -144,9 +134,8 @@ export function init(
         // Use the last parameter if there are multiple of the same
         const parameter = parameters[parameters.length - 1];
         return parameter.value || '';
-      } else {
-        return null;
       }
+      return null;
     },
 
     getParameters() {

@@ -1,4 +1,5 @@
-import crypto from 'crypto';
+import crypto from 'node:crypto';
+
 import { v4 as uuidv4 } from 'uuid';
 
 import { database as db } from '../common/database';
@@ -37,9 +38,7 @@ export interface BaseCookieJar {
 
 export type CookieJar = BaseModel & BaseCookieJar;
 
-export const isCookieJar = (model: Pick<BaseModel, 'type'>): model is CookieJar => (
-  model.type === type
-);
+export const isCookieJar = (model: Pick<BaseModel, 'type'>): model is CookieJar => model.type === type;
 
 export function init() {
   return {
@@ -76,9 +75,8 @@ export async function getOrCreateForParentId(parentId: string) {
       // de-duplicate cookie jar.
       _id: `${prefix}_${crypto.createHash('sha1').update(parentId).digest('hex')}`,
     });
-  } else {
-    return cookieJars[0];
   }
+  return cookieJars[0];
 }
 
 export async function all() {

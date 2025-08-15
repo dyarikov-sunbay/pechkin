@@ -15,10 +15,8 @@ describe('util', () => {
     });
 
     it('indents multi-line blocks', () => {
-      const text = 'function greet() {\n  console.log(\'Hello World!\');\n}';
-      expect(indent(1, text)).toBe(
-        '  function greet() {\n    console.log(\'Hello World!\');\n  }',
-      );
+      const text = "function greet() {\n  console.log('Hello World!');\n}";
+      expect(indent(1, text)).toBe("  function greet() {\n    console.log('Hello World!');\n  }");
     });
   });
 
@@ -28,7 +26,6 @@ describe('util', () => {
     });
 
     it('escapes something with quotes', () => {
-      // eslint-disable-next-line @typescript-eslint/quotes -- want to test both quote styles
       expect(escapeJsStr(`"Hello" 'World'`)).toBe(`"Hello" \\'World\\'`);
     });
   });

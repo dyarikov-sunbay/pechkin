@@ -18,6 +18,7 @@ import {
   SORT_TYPE_DESC,
 } from '../constants';
 import {
+  ascendingFirstIndexStringSort,
   ascendingNumberSort,
   descendingNumberSort,
   metaSortKeySort,
@@ -31,7 +32,8 @@ describe('Sorting methods', () => {
       { _id: '', metaSortKey: -800 },
       { _id: '', metaSortKey: -799 },
       { _id: '', metaSortKey: -1000 },
-      { _id: '', metaSortKey: -999 }];
+      { _id: '', metaSortKey: -999 },
+    ];
     const sorted = unsorted.sort(sortMethodMap['type-manual']);
     expect(sorted).toEqual([
       { _id: '', metaSortKey: -1000 },
@@ -1032,5 +1034,15 @@ describe('Sorting methods', () => {
     expect(descendingNumberSort(-2, 1)).toBe(1);
     expect(descendingNumberSort(2, 1)).toBe(-1);
     expect(descendingNumberSort(1, -2)).toBe(-1);
+  });
+
+  it('sorts the first string value in an array', () => {
+    expect(ascendingFirstIndexStringSort(['a'], ['b'])).toBe(-1);
+    expect(ascendingFirstIndexStringSort(['b'], ['a'])).toBe(1);
+    expect(ascendingFirstIndexStringSort(['ab'], ['abb'])).toBe(-1);
+    expect(ascendingFirstIndexStringSort(['abb'], ['ab'])).toBe(1);
+    expect(ascendingFirstIndexStringSort(['Abb'], ['bbb'])).toBe(-1);
+    expect(ascendingFirstIndexStringSort(['bbb'], ['Abb'])).toBe(1);
+    expect(ascendingFirstIndexStringSort(['x'], ['x'])).toBe(0);
   });
 });

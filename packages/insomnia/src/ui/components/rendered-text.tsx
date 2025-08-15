@@ -1,6 +1,6 @@
 import React, { type FC, PureComponent } from 'react';
 
-import type { HandleRender } from '../../common/render';
+import type { HandleRender } from '../../templating/types';
 import { useNunjucks } from '../context/nunjucks/use-nunjucks';
 
 interface Props {
@@ -22,6 +22,10 @@ class RenderedTextInternal extends PureComponent<Props, State> {
     const { render, children } = this.props;
 
     if (!children) {
+      this.setState({
+        renderedText: '',
+        error: '',
+      });
       return;
     }
 
@@ -59,14 +63,13 @@ class RenderedTextInternal extends PureComponent<Props, State> {
           {this.state.error || 'Unknown Error'}
         </span>
       );
-    } else {
-      return this.state.renderedText || '';
     }
+    return this.state.renderedText || '';
   }
 }
 
 export const RenderedText: FC<Omit<Props, 'render'>> = props => {
   const { handleRender } = useNunjucks();
 
-  return <RenderedTextInternal {...props} render={handleRender}/>;
+  return <RenderedTextInternal {...props} render={handleRender} />;
 };

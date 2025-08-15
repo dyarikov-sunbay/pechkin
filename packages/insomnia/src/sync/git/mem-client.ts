@@ -1,5 +1,6 @@
+import path from 'node:path';
+
 import type { PromiseFsClient } from 'isomorphic-git';
-import path from 'path';
 
 import Stat from './stat';
 import { SystemError } from './system-error';
@@ -88,10 +89,7 @@ export class MemClient {
     console.log(await next(baseDir, ''));
   }
 
-  async readFile(
-    filePath: string,
-    options: BufferEncoding | { encoding?: BufferEncoding } = {},
-  ) {
+  async readFile(filePath: string, options: BufferEncoding | { encoding?: BufferEncoding } = {}) {
     filePath = path.normalize(filePath);
 
     if (typeof options === 'string') {
@@ -108,9 +106,8 @@ export class MemClient {
 
     if (encoding) {
       return raw.toString(encoding);
-    } else {
-      return raw;
     }
+    return raw;
   }
 
   async writeFile(
@@ -153,14 +150,13 @@ export class MemClient {
       dirEntry.children.push(file);
     }
 
-    const dataBuff: Buffer = data instanceof Buffer ? data : Buffer.from(data, encoding);
     let newContents = Buffer.alloc(0);
 
     if (flag[0] === 'w') {
-      newContents = dataBuff;
+      newContents = typeof data === 'string' ? Buffer.from(data, encoding) : data;
     } else if (flag[0] === 'a') {
       const contentsBuff: Buffer = Buffer.from(file.contents, 'base64');
-      newContents = Buffer.concat([contentsBuff, dataBuff]);
+      newContents = Buffer.concat([contentsBuff, typeof data === 'string' ? Buffer.from(data, encoding) : data]);
     } else {
       throw new SystemError({
         code: 'EBADF',
@@ -428,7 +424,7 @@ export class MemClient {
   _remove(entry: FSEntry) {
     const parentEntry = this._assertDir(path.dirname(entry.path));
 
-    const index = parentEntry.children.findIndex(c => c === entry);
+    const index = parentEntry.children.indexOf(entry);
 
     if (index < 0) {
       // Should never happen so w/e

@@ -1,6 +1,7 @@
-import childProcess from 'child_process';
-import { cp, mkdir, rm } from 'fs/promises';
-import path from 'path';
+import childProcess from 'node:child_process';
+import { cp, mkdir, rm } from 'node:fs/promises';
+import path from 'node:path';
+
 import * as vite from 'vite';
 
 import buildMainAndPreload from '../esbuild.main';
@@ -20,15 +21,11 @@ if (require.main === module) {
 export const start = async () => {
   console.log('[build] Starting build');
 
-  console.log(
-    `[build] npm: ${childProcess.spawnSync('npm', ['--version']).stdout}`.trim()
-  );
-  console.log(
-    `[build] node: ${childProcess.spawnSync('node', ['--version']).stdout}`.trim()
-  );
+  console.log(`[build] npm: ${childProcess.spawnSync('npm', ['--version']).stdout}`.trim());
+  console.log(`[build] node: ${childProcess.spawnSync('node', ['--version']).stdout}`.trim());
 
-  if (process.version.indexOf('v20.') !== 0) {
-    console.log('[build] Node 20.x.x is required to build');
+  if (process.version.indexOf('v22.') !== 0) {
+    console.log('[build] Node 22.x.x is required to build');
     process.exit(1);
   }
 

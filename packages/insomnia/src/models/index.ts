@@ -17,11 +17,13 @@ import {
   EXPORT_TYPE_WORKSPACE,
 } from '../common/constants';
 import { generateId } from '../common/misc';
+import { typedKeys } from '../utils';
 import * as _apiSpec from './api-spec';
 import * as _caCertificate from './ca-certificate';
 import * as _clientCertificate from './client-certificate';
 import * as _cookieJar from './cookie-jar';
 import * as _environment from './environment';
+import * as _gitCredentials from './git-credentials';
 import * as _gitRepository from './git-repository';
 import * as _grpcRequest from './grpc-request';
 import * as _grpcRequestMeta from './grpc-request-meta';
@@ -70,6 +72,7 @@ export const clientCertificate = _clientCertificate;
 export const caCertificate = _caCertificate;
 export const cookieJar = _cookieJar;
 export const environment = _environment;
+export const gitCredentials = _gitCredentials;
 export const gitRepository = _gitRepository;
 export const mockServer = _mockServer;
 export const mockRoute = _mockRoute;
@@ -111,6 +114,7 @@ export function all() {
     workspace,
     workspaceMeta,
     environment,
+    gitCredentials,
     gitRepository,
     cookieJar,
     apiSpec,
@@ -214,15 +218,13 @@ export async function initModel<T extends BaseModel>(type: string, ...sources: R
   // If we put those keys in init method, all related models will show as modified in git sync.
   const modelOptionalKeys: string[] = 'optionalKeys' in model ? model.optionalKeys || [] : [];
   // Prune extra keys from doc
-  for (const key of Object.keys(migratedDoc)) {
-    if (!objectDefaults.hasOwnProperty(key) && !modelOptionalKeys.includes(key)) {
-      // @ts-expect-error -- mapping unsoundness
+  for (const key of typedKeys(migratedDoc)) {
+    if (!(key in objectDefaults) && !modelOptionalKeys.includes(key)) {
       delete migratedDoc[key];
     }
   }
 
-  // @ts-expect-error -- TSCONVERSION not sure why this error is occurring
-  return migratedDoc;
+  return migratedDoc as T;
 }
 
 export const MODELS_BY_EXPORT_TYPE: Record<string, any> = {
@@ -232,6 +234,7 @@ export const MODELS_BY_EXPORT_TYPE: Record<string, any> = {
   [EXPORT_TYPE_MOCK_SERVER]: mockServer,
   [EXPORT_TYPE_MOCK_ROUTE]: mockRoute,
   [EXPORT_TYPE_GRPC_REQUEST]: grpcRequest,
+  // @TODO Maybe we don't need this to be exported
   [EXPORT_TYPE_RUNNER_TEST_RESULT]: runnerTestResult,
   [EXPORT_TYPE_REQUEST_GROUP]: requestGroup,
   [EXPORT_TYPE_UNIT_TEST_SUITE]: unitTestSuite,

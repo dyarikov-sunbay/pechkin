@@ -35,9 +35,7 @@ const FIELDS_TO_IGNORE = [
   'name',
 ] as const;
 
-export const isRequestVersion = (model: Pick<BaseModel, 'type'>): model is RequestVersion => (
-  model.type === type
-);
+export const isRequestVersion = (model: Pick<BaseModel, 'type'>): model is RequestVersion => model.type === type;
 
 export function init() {
   return {
@@ -77,10 +75,9 @@ export async function create(request: Request | WebSocketRequest | GrpcRequest) 
       parentId,
       compressedRequest,
     });
-  } else {
-    // Re-use the latest version if not modified since
-    return latestRequestVersion;
   }
+  // Re-use the latest version if not modified since
+  return latestRequestVersion;
 }
 
 export function getLatestByParentId(parentId: string) {

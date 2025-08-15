@@ -1,5 +1,5 @@
-import fs from 'fs/promises';
-import path from 'path';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 
 import type { BaseDriver } from './base';
 import { gracefulRename } from './graceful-rename';
@@ -35,13 +35,13 @@ export default class FileSystemDriver implements BaseDriver {
   async setItem(key: string, value: Buffer) {
     console.log(`[FileSystemDriver] Writing to ${key}`);
     const finalPath = await this._getKeyPath(key);
-      // Temp path contains randomness to avoid race-condition collisions. This
-      // doesn't actually avoid race conditions but at least it won't fail.
+    // Temp path contains randomness to avoid race-condition collisions. This
+    // doesn't actually avoid race conditions but at least it won't fail.
 
     const tmpPath = `${finalPath}.${crypto.randomUUID()}.tmp`;
     console.log(`[FileSystemDriver] Writing to ${tmpPath} then renaming to ${finalPath}`);
-      // This method implements atomic writes by first writing to a temporary
-      // file (non-atomic) then renaming the file to the final value (atomic)
+    // This method implements atomic writes by first writing to a temporary
+    // file (non-atomic) then renaming the file to the final value (atomic)
     try {
       await fs.writeFile(tmpPath, value, 'utf8');
       await gracefulRename(tmpPath, finalPath);
@@ -117,7 +117,7 @@ export default class FileSystemDriver implements BaseDriver {
     const keys: string[] = [];
 
     for (const rawKey of rawKeys) {
-      keys.push(rawKey.substring(this._directory.length));
+      keys.push(rawKey.slice(this._directory.length));
     }
 
     return keys;

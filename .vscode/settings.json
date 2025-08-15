@@ -7,7 +7,11 @@
   },
   "files.insertFinalNewline": true,
   "editor.formatOnSave": true,
-  "editor.formatOnSaveMode": "modifications",
+  "editor.formatOnSaveMode": "file",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "always",
+    "source.fixAll.ts": "always"
+  },
   "editor.defaultFormatter": "vscode.typescript-language-features",
   "[json]": {
     "editor.defaultFormatter": "vscode.json-language-features"
@@ -15,7 +19,14 @@
   "[jsonc]": {
     "editor.defaultFormatter": "vscode.json-language-features"
   },
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[typescript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
   "cSpell.words": [
+    "apikey",
     "Dismissable",
     "getinsomnia",
     "inso",
@@ -30,4 +41,7 @@
     "upsert",
     "xmark"
   ],
+  "[cpp]": {
+    "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd"
+  }
 }

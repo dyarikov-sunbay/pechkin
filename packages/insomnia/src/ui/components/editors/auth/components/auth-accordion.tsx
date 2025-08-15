@@ -1,6 +1,6 @@
 import classnames from 'classnames';
 import React, { type FC, type PropsWithChildren } from 'react';
-import { useRouteLoaderData } from 'react-router-dom';
+import { useRouteLoaderData } from 'react-router';
 
 import type { RequestAccordionKeys } from '../../../../../models/request-meta';
 import { useRequestMetaPatcher } from '../../../../hooks/use-request';
@@ -16,12 +16,13 @@ export const AuthAccordion: FC<PropsWithChildren<Props>> = ({ accordionKey, labe
   const expanded = !reqData || Boolean(reqData.activeRequestMeta?.expandedAccordionKeys[accordionKey]);
   const patchRequestMeta = useRequestMetaPatcher();
   const toggle = () => {
-    reqData && patchRequestMeta(reqData.activeRequest._id, {
-      expandedAccordionKeys: {
-        ...reqData.activeRequestMeta?.expandedAccordionKeys,
-        [accordionKey]: !expanded,
-      },
-    });
+    reqData &&
+      patchRequestMeta(reqData.activeRequest._id, {
+        expandedAccordionKeys: {
+          ...reqData.activeRequestMeta?.expandedAccordionKeys,
+          [accordionKey]: !expanded,
+        },
+      });
   };
 
   return (
@@ -33,10 +34,7 @@ export const AuthAccordion: FC<PropsWithChildren<Props>> = ({ accordionKey, labe
               style={{
                 minWidth: '0.8rem',
               }}
-              className={classnames(
-                'fa fa--skinny',
-                `fa-caret-${expanded ? 'down' : 'right'}`,
-              )}
+              className={classnames('fa fa--skinny', `fa-caret-${expanded ? 'down' : 'right'}`)}
             />
             {label}
           </button>

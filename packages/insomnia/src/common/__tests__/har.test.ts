@@ -1,18 +1,19 @@
-import path from 'path';
+import path from 'node:path';
+
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { database as db } from '../../common/database';
 import * as models from '../../models';
-import { Cookie } from '../../models/cookie-jar';
-import { Request } from '../../models/request';
-import { Response } from '../../models/response';
+import type { Cookie } from '../../models/cookie-jar';
+import type { Request } from '../../models/request';
+import type { Response } from '../../models/response';
 import { AUTH_BASIC } from '../constants';
 import { exportHar, exportHarResponse, exportHarWithRequest } from '../har';
 import { getRenderedRequestAndContext } from '../render';
 
 describe('export', () => {
   beforeEach(async () => {
-    await db.init(models.types(), { inMemoryOnly: true }, true, () => { },);
+    await db.init(models.types(), { inMemoryOnly: true }, true, () => {});
     await models.project.all();
     await models.settings.getOrCreate();
   });
@@ -35,11 +36,11 @@ describe('export', () => {
         },
         headers: [
           {
-            name: 'Content-Type',
+            name: 'Accept',
             value: 'application/json',
           },
           {
-            name: 'Accept',
+            name: 'Content-Type',
             value: 'application/json',
             disabled: false,
           },
@@ -89,11 +90,11 @@ describe('export', () => {
                 cookies: [],
                 headers: [
                   {
-                    name: 'Content-Type',
+                    name: 'Accept',
                     value: 'application/json',
                   },
                   {
-                    name: 'Accept',
+                    name: 'Content-Type',
                     value: 'application/json',
                   },
                 ],
@@ -335,12 +336,12 @@ describe('export', () => {
         statusMessage: 'OK',
         headers: [
           {
-            name: 'Content-Type',
-            value: 'application/json',
-          },
-          {
             name: 'Content-Length',
             value: '2',
+          },
+          {
+            name: 'Content-Type',
+            value: 'application/json',
           },
           {
             name: 'Set-Cookie',
@@ -365,12 +366,13 @@ describe('export', () => {
         ],
         headers: [
           {
-            name: 'Content-Type',
-            value: 'application/json',
-          },
-          {
             name: 'Content-Length',
             value: '2',
+          },
+
+          {
+            name: 'Content-Type',
+            value: 'application/json',
           },
           {
             name: 'Set-Cookie',

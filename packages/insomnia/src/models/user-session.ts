@@ -11,7 +11,9 @@ export interface BaseUserSession {
   symmetricKey: JsonWebKey;
   publicKey: JsonWebKey;
   encPrivateKey: AESMessage;
-};
+  vaultSalt?: string;
+  vaultKey?: string;
+}
 
 export interface HashedUserSession {
   hashedAccountId: string;
@@ -34,6 +36,8 @@ export function init(): BaseUserSession {
     symmetricKey: {} as JsonWebKey,
     publicKey: {} as JsonWebKey,
     encPrivateKey: {} as AESMessage,
+    vaultKey: '',
+    vaultSalt: '',
   };
 }
 
@@ -68,7 +72,7 @@ export async function patch(patch: Partial<UserSession>) {
 }
 
 export async function getOrCreate() {
-  const results = await db.all<UserSession>(type) || [];
+  const results = (await db.all<UserSession>(type)) || [];
 
   if (results.length === 0) {
     return await create();
@@ -77,7 +81,7 @@ export async function getOrCreate() {
 }
 
 export async function get() {
-  const results = await db.all<UserSession>(type) || [];
+  const results = (await db.all<UserSession>(type)) || [];
 
   return results[0];
 }

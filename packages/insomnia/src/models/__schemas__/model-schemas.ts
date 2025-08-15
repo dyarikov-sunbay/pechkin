@@ -1,9 +1,8 @@
 import type { Schema } from '@develohpanda/fluent-builder';
 import clone from 'clone';
 
-import { type BaseModel, environment, gitRepository, grpcRequest, request, requestGroup, workspace } from '..';
+import { type BaseModel, environment, grpcRequest, request, requestGroup, workspace } from '..';
 import type { Environment } from '../environment';
-import type { GitRepository } from '../git-repository';
 import type { GrpcRequest } from '../grpc-request';
 import type { Request } from '../request';
 import type { RequestGroup } from '../request-group';
@@ -14,7 +13,7 @@ const toSchema = <T>(obj: T): Schema<T> => {
   const cloned = clone(obj);
   const output: Partial<Schema<T>> = {};
 
-    // @ts-expect-error -- mapping unsoundness
+  // @ts-expect-error -- mapping unsoundness
   Object.keys(cloned).forEach(key => {
     // @ts-expect-error -- mapping unsoundness
     output[key] = () => cloned[key];
@@ -56,16 +55,6 @@ export const requestGroupModelSchema: Schema<RequestGroup> = {
   ...baseModelSchema,
   ...toSchema(requestGroup.init()),
   type: () => requestGroup.type,
-};
-
-export const gitRepositorySchema: Schema<GitRepository> = {
-  ...baseModelSchema,
-  type: () => gitRepository.type,
-  author: () => ({ name: '', email: '' }),
-  credentials: () => null,
-  uri: () => '',
-  needsFullClone: () => false,
-  uriNeedsMigration: () => true,
 };
 
 export const environmentModelSchema: Schema<Environment> = {

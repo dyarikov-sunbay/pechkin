@@ -1,6 +1,13 @@
 import React from 'react';
 
-import { type Environment, type EnvironmentKvPairData, EnvironmentType, getKVPairFromData } from '../../../models/environment';
+import {
+  type Environment,
+  type EnvironmentKvPairData,
+  EnvironmentType,
+  getKVPairFromData,
+  vaultEnvironmentPath,
+  vaultEnvironmentRuntimePath,
+} from '../../../models/environment';
 import { NUNJUCKS_TEMPLATE_GLOBAL_PROPERTY_NAME } from '../../../templating';
 import { showModal } from '../modals';
 import { AlertModal } from '../modals/alert-modal';
@@ -17,6 +24,14 @@ export const ensureKeyIsValid = (key: string, isRoot: boolean): string | null =>
 
   if (key === NUNJUCKS_TEMPLATE_GLOBAL_PROPERTY_NAME && isRoot) {
     return `"${NUNJUCKS_TEMPLATE_GLOBAL_PROPERTY_NAME}" is a reserved key`;
+  }
+
+  if (key === vaultEnvironmentPath && isRoot) {
+    return `"${vaultEnvironmentPath}" is a reserved key`;
+  }
+
+  if (key === vaultEnvironmentRuntimePath && isRoot) {
+    return `"${vaultEnvironmentRuntimePath}" is a reserved key`;
   }
 
   return null;
@@ -61,9 +76,13 @@ export function handleToggleEnvironmentType(
   // clear kvPairData when switch to json view, otherwise convert json data to kvPairData
   const kvPairData = isSelected ? [] : getKVPairFromData(environment.data, environment.dataPropertyOrder);
   const foundDisabledItem = isSelected && environment.kvPairData?.some(pair => !pair.enabled);
-  const foundDuplicateNameItem = isSelected && environment.kvPairData?.some(
-    (pair, idx) => environment.kvPairData?.slice(idx + 1).some(newPair => pair.name.trim() === newPair.name.trim() && newPair.enabled)
-  );
+  const foundDuplicateNameItem =
+    isSelected &&
+    environment.kvPairData?.some((pair, idx) =>
+      environment.kvPairData
+        ?.slice(idx + 1)
+        .some(newPair => pair.name.trim() === newPair.name.trim() && newPair.enabled),
+    );
   if (!isValidJSON && newEnvironmentType === EnvironmentType.KVPAIR) {
     showModal(AlertModal, {
       title: 'Error',

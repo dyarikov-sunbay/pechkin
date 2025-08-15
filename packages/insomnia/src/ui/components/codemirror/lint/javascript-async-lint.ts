@@ -36,16 +36,11 @@ function validator(text: string, options: LintOptions): ValidationError[] {
 }
 
 function parseErrors(errors: LintError[], output: ValidationError[]) {
-  for (let i = 0; i < errors.length; i++) {
-    const error = errors[i];
-
+  for (const error of errors) {
     if (error) {
       if (error.line <= 0) {
         if (window.console) {
-          window.console.warn(
-            'Cannot display JSHint error (invalid line ' + error.line + ')',
-            error,
-          );
+          window.console.warn('Cannot display JSHint error (invalid line ' + error.line + ')', error);
         }
 
         continue;
@@ -55,7 +50,7 @@ function parseErrors(errors: LintError[], output: ValidationError[]) {
       let end = start + 1;
 
       if (error.evidence) {
-        const index = error.evidence.substring(start).search(/.\b/);
+        const index = error.evidence.slice(Math.max(0, start)).search(/.\b/);
 
         if (index > -1) {
           end += index;

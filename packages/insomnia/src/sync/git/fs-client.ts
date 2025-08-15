@@ -1,5 +1,5 @@
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 
 type FSWraps =
   | typeof fs.promises.readFile
@@ -18,11 +18,23 @@ export const fsClient = (basePath: string) => {
   console.log(`[fsClient] Created in ${basePath}`);
   fs.mkdirSync(basePath, { recursive: true });
 
-  const wrap = (fn: FSWraps) => async (filePath: string, ...args: any[]) => {
-    const modifiedPath = path.join(basePath, path.normalize(filePath));
-    // @ts-expect-error -- TSCONVERSION
-    return fn(modifiedPath, ...args);
-  };
+  const wrap =
+    (fn: FSWraps) =>
+    async (filePath: string, ...args: any[]) => {
+      const modifiedPath = path.join(basePath, path.normalize(filePath));
+
+      // @ts-expect-error -- TSCONVERSION
+      return fn(modifiedPath, ...args);
+    };
+
+  const wrapSymlink =
+    (fn: typeof fs.promises.symlink) =>
+    async (filePath: string, target: string, ...args: any[]) => {
+      const modifiedPath = path.join(basePath, path.normalize(filePath));
+      const modifiedTarget = path.join(basePath, path.normalize(target));
+
+      return fn(modifiedPath, modifiedTarget, ...args);
+    };
 
   return {
     promises: {
@@ -35,7 +47,7 @@ export const fsClient = (basePath: string) => {
       stat: wrap(fs.promises.stat),
       lstat: wrap(fs.promises.lstat),
       readlink: wrap(fs.promises.readlink),
-      symlink: wrap(fs.promises.symlink),
+      symlink: wrapSymlink(fs.promises.symlink),
     },
   };
 };

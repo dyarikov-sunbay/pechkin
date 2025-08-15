@@ -4,15 +4,14 @@ import * as themes from '../../plugins/misc';
 import { useRootLoaderData } from '../routes/root';
 
 export const useThemeChange = () => {
-  const {
-    settings,
-  } = useRootLoaderData();
+  const { settings } = useRootLoaderData();
   // Handle System Theme change
   useEffect(() => {
     const matches = window.matchMedia('(prefers-color-scheme: dark)');
-    matches.addEventListener('change', () => themes.applyColorScheme(settings));
+    const applyTheme = () => themes.applyColorScheme(settings);
+    matches.addEventListener('change', applyTheme);
     return () => {
-      matches.removeEventListener('change', () => themes.applyColorScheme(settings));
+      matches.removeEventListener('change', applyTheme);
     };
   });
 };

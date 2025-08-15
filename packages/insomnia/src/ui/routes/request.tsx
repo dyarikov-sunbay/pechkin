@@ -1,18 +1,24 @@
 import { createWriteStream } from 'node:fs';
+import fs from 'node:fs';
 import path from 'node:path';
 
 import * as contentDisposition from 'content-disposition';
 import { GRAPHQL_TRANSPORT_WS_PROTOCOL, MessageType } from 'graphql-ws';
-import type { RequestTestResult } from 'insomnia-sdk';
 import { extension as mimeExtension } from 'mime-types';
-import { type ActionFunction, type LoaderFunction, redirect } from 'react-router-dom';
+import { type ActionFunction, type LoaderFunction, redirect } from 'react-router';
 import { v4 as uuidv4 } from 'uuid';
 
+import type { RequestTestResult } from '../../../../insomnia-scripting-environment/src/objects';
 import { version } from '../../../package.json';
-import { CONTENT_TYPE_EVENT_STREAM, CONTENT_TYPE_GRAPHQL, CONTENT_TYPE_JSON, METHOD_GET, METHOD_POST } from '../../common/constants';
+import {
+  CONTENT_TYPE_EVENT_STREAM,
+  CONTENT_TYPE_GRAPHQL,
+  CONTENT_TYPE_JSON,
+  METHOD_GET,
+  METHOD_POST,
+} from '../../common/constants';
 import { type ChangeBufferEvent, database } from '../../common/database';
 import { getContentDispositionHeader } from '../../common/misc';
-import { type RenderedRequest } from '../../common/render';
 import type { ResponsePatch } from '../../main/network/libcurl-promise';
 import type { TimingStep } from '../../main/network/request-timing';
 import type { BaseModel } from '../../models';
@@ -25,7 +31,16 @@ import * as requestOperations from '../../models/helpers/request-operations';
 import type { MockRoute } from '../../models/mock-route';
 import type { MockServer } from '../../models/mock-server';
 import { isGraphqlSubscriptionRequest } from '../../models/request';
-import { getPathParametersFromUrl, isEventStreamRequest, isRequest, type Request, type RequestAuthentication, type RequestBody, type RequestHeader, type RequestParameter } from '../../models/request';
+import {
+  getPathParametersFromUrl,
+  isEventStreamRequest,
+  isRequest,
+  type Request,
+  type RequestAuthentication,
+  type RequestBody,
+  type RequestHeader,
+  type RequestParameter,
+} from '../../models/request';
 import { isRequestMeta, type RequestMeta } from '../../models/request-meta';
 import type { RequestVersion } from '../../models/request-version';
 import type { Response } from '../../models/response';
@@ -33,8 +48,16 @@ import type { ResponseInfo, RunnerResultPerRequestPerIteration } from '../../mod
 import { isWebSocketRequest, isWebSocketRequestId, type WebSocketRequest } from '../../models/websocket-request';
 import { isWebSocketResponse, type WebSocketResponse } from '../../models/websocket-response';
 import { getAuthHeader } from '../../network/authentication';
-import { fetchRequestData, responseTransform, sendCurlAndWriteTimeline, tryToExecuteAfterResponseScript, tryToExecutePreRequestScript, tryToInterpolateRequest, tryToTransformRequestWithPlugins } from '../../network/network';
-import { RenderErrorSubType } from '../../templating';
+import {
+  fetchRequestData,
+  responseTransform,
+  sendCurlAndWriteTimeline,
+  tryToExecuteAfterResponseScript,
+  tryToExecutePreRequestScript,
+  tryToInterpolateRequest,
+  tryToTransformRequestWithPlugins,
+} from '../../network/network';
+import { type RenderedRequest } from '../../templating/types';
 import { parseGraphQLReqeustBody } from '../../utils/graph-ql';
 import { invariant } from '../../utils/invariant';
 import { SegmentEvent } from '../analytics';
@@ -64,7 +87,15 @@ export interface RequestLoaderData {
   mockServerAndRoutes: (MockServer & { routes: MockRoute[] })[];
 }
 
-export const loader: LoaderFunction = async ({ params }): Promise<RequestLoaderData | WebSocketRequestLoaderData | GrpcRequestLoaderData> => {
+export const defaultSendActionRuntime = {
+  appendTimeline: async (timelinePath: string, logs: string[]) => {
+    await fs.promises.appendFile(timelinePath, logs.join('\n'));
+  },
+};
+
+export const loader: LoaderFunction = async ({
+  params,
+}): Promise<RequestLoaderData | WebSocketRequestLoaderData | GrpcRequestLoaderData> => {
   const { organizationId, projectId, requestId, workspaceId } = params;
   invariant(requestId, 'Request ID is required');
   invariant(workspaceId, 'Workspace ID is required');
@@ -95,15 +126,30 @@ export const loader: LoaderFunction = async ({ params }): Promise<RequestLoaderD
   const activeResponse = activeRequestMeta.activeResponseId
     ? await models[responseModelName].getById(activeRequestMeta.activeResponseId)
     : await models[responseModelName].getLatestForRequest(requestId, activeWorkspaceMeta.activeEnvironmentId);
-  const allResponses = await models[responseModelName].findByParentId(requestId) as (Response | WebSocketResponse)[];
-  const filteredResponses = allResponses
-    .filter((r: Response | WebSocketResponse) => r.environmentId === activeWorkspaceMeta.activeEnvironmentId);
-  const responses = (filterResponsesByEnv ? filteredResponses : allResponses)
-    .sort((a: BaseModel, b: BaseModel) => (a.created > b.created ? -1 : 1));
+  const allResponses = (await models[responseModelName].findByParentId(requestId)) as (Response | WebSocketResponse)[];
+  const filteredResponses = allResponses.filter(
+    (r: Response | WebSocketResponse) => r.environmentId === activeWorkspaceMeta.activeEnvironmentId,
+  );
+  const responses = (filterResponsesByEnv ? filteredResponses : allResponses).sort((a: BaseModel, b: BaseModel) =>
+    a.created > b.created ? -1 : 1,
+  );
+
+  if (activeResponse && 'bodyPath' in activeResponse) {
+    // read the body if its smaller than the limit add it to the activeResponse
+    const length = Math.max(activeResponse.bytesContent, activeResponse.bytesRead);
+    const isOversizedResponse = length > 5 * 1024 * 1024; // 5MB
+    // Oversized repsonses are handled in the response-viewer.tsx for now
+    if (!isOversizedResponse) {
+      const buffer = await models.response.getBodyBuffer(activeResponse);
+      activeResponse.bodyBuffer = typeof buffer === 'string' ? Buffer.from(buffer) : buffer;
+    }
+  }
 
   // Q(gatzjames): load mock servers here or somewhere else?
   const mockServers = await models.mockServer.findByProjectId(projectId);
-  const mockRoutes = await database.find<MockRoute>(models.mockRoute.type, { parentId: { $in: mockServers.map(s => s._id) } });
+  const mockRoutes = await database.find<MockRoute>(models.mockRoute.type, {
+    parentId: { $in: mockServers.map(s => s._id) },
+  });
   const mockServerAndRoutes = mockServers.map(mockServer => ({
     ...mockServer,
     routes: mockRoutes.filter(route => route.parentId === mockServer._id),
@@ -132,75 +178,86 @@ export const loader: LoaderFunction = async ({ params }): Promise<RequestLoaderD
 export const createRequestAction: ActionFunction = async ({ request, params }) => {
   const { organizationId, projectId, workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
-  const { requestType, parentId, req } = await request.json() as { requestType: CreateRequestType; parentId?: string; req?: Request };
+  const { requestType, parentId, req } = (await request.json()) as {
+    requestType: CreateRequestType;
+    parentId?: string;
+    req?: Request;
+  };
 
   const settings = await models.settings.getOrCreate();
-  const defaultHeaders = settings.disableAppVersionUserAgent ? [] : [{ name: 'User-Agent', value: `insomnia/${version}` }];
+  const defaultHeaders = settings.disableAppVersionUserAgent
+    ? []
+    : [{ name: 'User-Agent', value: `insomnia/${version}` }];
 
   let activeRequestId;
   if (requestType === 'HTTP') {
-    activeRequestId = (await models.request.create({
-      parentId: parentId || workspaceId,
-      method: METHOD_GET,
-      name: 'New Request',
-      headers: defaultHeaders,
-    }))._id;
+    activeRequestId = (
+      await models.request.create({
+        parentId: parentId || workspaceId,
+        method: METHOD_GET,
+        name: 'New Request',
+        headers: defaultHeaders,
+      })
+    )._id;
   }
   if (requestType === 'gRPC') {
-    activeRequestId = (await models.grpcRequest.create({
-      parentId: parentId || workspaceId,
-      name: 'New Request',
-    }))._id;
+    activeRequestId = (
+      await models.grpcRequest.create({
+        parentId: parentId || workspaceId,
+        name: 'New Request',
+      })
+    )._id;
   }
   if (requestType === 'GraphQL') {
-
-    activeRequestId = (await models.request.create({
-      parentId: parentId || workspaceId,
-      method: METHOD_POST,
-      headers: [
-        ...defaultHeaders,
-        { name: 'Content-Type', value: CONTENT_TYPE_JSON },
-      ],
-      body: {
-        mimeType: CONTENT_TYPE_GRAPHQL,
-        text: '',
-      },
-      name: 'New Request',
-    }))._id;
+    activeRequestId = (
+      await models.request.create({
+        parentId: parentId || workspaceId,
+        method: METHOD_POST,
+        headers: [...defaultHeaders, { name: 'Content-Type', value: CONTENT_TYPE_JSON }],
+        body: {
+          mimeType: CONTENT_TYPE_GRAPHQL,
+          text: '',
+        },
+        name: 'New Request',
+      })
+    )._id;
   }
   if (requestType === 'Event Stream') {
-    activeRequestId = (await models.request.create({
-      parentId: parentId || workspaceId,
-      method: METHOD_GET,
-      url: '',
-      headers: [
-        ...defaultHeaders,
-        { name: 'Accept', value: CONTENT_TYPE_EVENT_STREAM },
-      ],
-      name: 'New Event Stream',
-    }))._id;
+    activeRequestId = (
+      await models.request.create({
+        parentId: parentId || workspaceId,
+        method: METHOD_GET,
+        url: '',
+        headers: [...defaultHeaders, { name: 'Accept', value: CONTENT_TYPE_EVENT_STREAM }],
+        name: 'New Event Stream',
+      })
+    )._id;
   }
   if (requestType === 'WebSocket') {
-    activeRequestId = (await models.webSocketRequest.create({
-      parentId: parentId || workspaceId,
-      name: 'New WebSocket Request',
-      headers: defaultHeaders,
-    }))._id;
+    activeRequestId = (
+      await models.webSocketRequest.create({
+        parentId: parentId || workspaceId,
+        name: 'New WebSocket Request',
+        headers: defaultHeaders,
+      })
+    )._id;
   }
   if (requestType === 'From Curl') {
     if (!req) {
       return null;
     }
     try {
-      activeRequestId = (await models.request.create({
-        parentId: parentId || workspaceId,
-        url: req.url,
-        method: req.method,
-        headers: req.headers,
-        body: req.body as RequestBody,
-        authentication: req.authentication,
-        parameters: req.parameters as RequestParameter[],
-      }))._id;
+      activeRequestId = (
+        await models.request.create({
+          parentId: parentId || workspaceId,
+          url: req.url,
+          method: req.method,
+          headers: req.headers,
+          body: req.body as RequestBody,
+          authentication: req.authentication,
+          parameters: req.parameters as RequestParameter[],
+        })
+      )._id;
     } catch (error) {
       console.error(error);
       return null;
@@ -210,7 +267,10 @@ export const createRequestAction: ActionFunction = async ({ request, params }) =
   models.stats.incrementCreatedRequests();
   window.main.trackSegmentEvent({ event: SegmentEvent.requestCreate, properties: { requestType } });
 
-  return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug/request/${activeRequestId}`);
+  // add a created query param to the URL to indicate that the request was just created, this is for distinguishing if we will create a temporary or permanent tab
+  return redirect(
+    `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug/request/${activeRequestId}?created=true`,
+  );
 };
 export const updateRequestAction: ActionFunction = async ({ request, params }) => {
   const { requestId } = params;
@@ -287,13 +347,15 @@ export const duplicateRequestAction: ActionFunction = async ({ request, params }
   const newRequest = await requestOperations.duplicate(req, { name });
   invariant(newRequest, 'Failed to duplicate request');
   models.stats.incrementCreatedRequests();
-  return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug/request/${newRequest._id}`);
+  return redirect(
+    `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug/request/${newRequest._id}`,
+  );
 };
 
 export const updateRequestMetaAction: ActionFunction = async ({ request, params }) => {
   const { requestId } = params;
   invariant(typeof requestId === 'string', 'Request ID is required');
-  const patch = await request.json() as Partial<RequestMeta | GrpcRequestMeta>;
+  const patch = (await request.json()) as Partial<RequestMeta | GrpcRequestMeta>;
   if (isGrpcRequestId(requestId)) {
     await models.grpcRequestMeta.updateOrCreateByParentId(requestId, patch);
     return null;
@@ -314,7 +376,7 @@ export const connectAction: ActionFunction = async ({ request, params }) => {
   const req = await requestOperations.getById(requestId);
   invariant(req, 'Request not found');
   invariant(workspaceId, 'Workspace ID is required');
-  const rendered = await request.json() as ConnectActionParams;
+  const rendered = (await request.json()) as ConnectActionParams;
 
   if (isWebSocketRequestId(requestId)) {
     window.main.webSocket.open({
@@ -375,7 +437,12 @@ export const connectAction: ActionFunction = async ({ request, params }) => {
     });
   });
 };
-const writeToDownloadPath = (downloadPathAndName: string, responsePatch: ResponsePatch, requestMeta: RequestMeta, maxHistoryResponses: number) => {
+const writeToDownloadPath = (
+  downloadPathAndName: string,
+  responsePatch: ResponsePatch,
+  requestMeta: RequestMeta,
+  maxHistoryResponses: number,
+) => {
   invariant(downloadPathAndName, 'filename should be set by now');
 
   const to = createWriteStream(downloadPathAndName);
@@ -407,11 +474,15 @@ export interface SendActionParams {
   ignoreUndefinedEnvVariable?: boolean;
 }
 
+export interface SendActionRuntime {
+  appendTimeline: (timelinePath: string, logs: string[]) => Promise<void>;
+}
+
 export const sendAction: ActionFunction = async ({ request, params }) => {
   const { requestId, workspaceId } = params;
   invariant(typeof requestId === 'string', 'Request ID is required');
   invariant(workspaceId, 'Workspace ID is required');
-  const { shouldPromptForPathAfterResponse, ignoreUndefinedEnvVariable } = await request.json() as SendActionParams;
+  const { shouldPromptForPathAfterResponse, ignoreUndefinedEnvVariable } = (await request.json()) as SendActionParams;
 
   try {
     return await sendActionImplementation({
@@ -422,6 +493,7 @@ export const sendAction: ActionFunction = async ({ request, params }) => {
   } catch (err) {
     console.log('[request] Failed to send request', err);
     const e = err.error || err;
+    const url = new URL(request.url);
 
     // when after-script error, there is no error in response, we need to set error info into response, so that we can show it in response viewer
     if (err.response && err.requestMeta && err.response._id) {
@@ -432,17 +504,18 @@ export const sendAction: ActionFunction = async ({ request, params }) => {
       }
       // this part is for persisting useful info (e.g. timeline) for debugging, even there is an error
       const existingResponse = await models.response.getById(err.response._id);
-      const response = existingResponse || await models.response.create(err.response, err.maxHistoryResponses);
+      const response = existingResponse || (await models.response.create(err.response, err.maxHistoryResponses));
       await models.requestMeta.update(err.requestMeta, { activeResponseId: response._id });
+    } else {
+      // if the error is not from response, we need to set it to url param and show it in modal
+      url.searchParams.set('error', e);
+      if (e?.extraInfo && e?.extraInfo?.subType === 'environmentVariable') {
+        url.searchParams.set('envVariableMissing', '1');
+        url.searchParams.set('undefinedEnvironmentVariables', e?.extraInfo?.undefinedEnvironmentVariables);
+      }
     }
 
     window.main.completeExecutionStep({ requestId });
-    const url = new URL(request.url);
-    url.searchParams.set('error', e);
-    if (e?.extraInfo && e?.extraInfo?.subType === RenderErrorSubType.EnvironmentVariable) {
-      url.searchParams.set('envVariableMissing', '1');
-      url.searchParams.set('undefinedEnvironmentVariables', e?.extraInfo?.undefinedEnvironmentVariables);
-    }
     return redirect(`${url.pathname}?${url.searchParams}`);
   }
 };
@@ -473,29 +546,33 @@ export interface RunnerContextForRequest {
   responseId: string;
 }
 
-export const sendActionImplementation = async ({
-  requestId,
-  userUploadEnvironment,
-  shouldPromptForPathAfterResponse,
-  ignoreUndefinedEnvVariable,
-  testResultCollector,
-  iteration,
-  iterationCount,
-  transientVariables,
-}: {
-    requestId: string;
+export const sendActionImplementation = async (options: {
+  requestId: string;
   shouldPromptForPathAfterResponse: boolean | undefined;
   ignoreUndefinedEnvVariable: boolean | undefined;
   testResultCollector?: RunnerContextForRequest;
-    iteration?: number;
-    iterationCount?: number;
-    userUploadEnvironment?: UserUploadEnvironment;
-    transientVariables?: Environment;
+  iteration?: number;
+  iterationCount?: number;
+  userUploadEnvironment?: UserUploadEnvironment;
+  transientVariables?: Environment;
+  runtime?: SendActionRuntime;
 }) => {
+  const {
+    requestId,
+    userUploadEnvironment,
+    shouldPromptForPathAfterResponse,
+    ignoreUndefinedEnvVariable,
+    testResultCollector,
+    iteration,
+    iterationCount,
+    transientVariables: nullableTransientVariables,
+    runtime = defaultSendActionRuntime,
+  } = options;
+
   window.main.startExecution({ requestId });
   const requestData = await fetchRequestData(requestId);
   const requestMeta = await models.requestMeta.getByParentId(requestId);
-  transientVariables = transientVariables || {
+  const transientVariables = nullableTransientVariables || {
     ...models.environment.init(),
     _id: uuidv4(),
     type: models.environment.type,
@@ -507,8 +584,16 @@ export const sendActionImplementation = async ({
   };
 
   window.main.addExecutionStep({ requestId, stepName: 'Executing pre-request script' });
-  const mutatedContext = await tryToExecutePreRequestScript(requestData, transientVariables, userUploadEnvironment, iteration, iterationCount);
+  const mutatedContext = await tryToExecutePreRequestScript(
+    requestData,
+    transientVariables,
+    userUploadEnvironment,
+    iteration,
+    iterationCount,
+    runtime,
+  );
   if ('error' in mutatedContext) {
+    window.main.completeExecutionStep({ requestId });
     throw {
       // create response with error info, so that we can store response in db and show it in response viewer
       response: {
@@ -544,7 +629,9 @@ export const sendActionImplementation = async ({
 
   // disable after-response script here to avoiding rendering it
   // @TODO This should be handled in a better way. Maybe remove the key from the request object we pass in tryToInterpolateRequest
-  const afterResponseScript = mutatedContext.request.afterResponseScript ? `${mutatedContext.request.afterResponseScript}` : undefined;
+  const afterResponseScript = mutatedContext.request.afterResponseScript
+    ? `${mutatedContext.request.afterResponseScript}`
+    : undefined;
   mutatedContext.request.afterResponseScript = '';
 
   window.main.addExecutionStep({ requestId, stepName: 'Rendering request' });
@@ -573,20 +660,35 @@ export const sendActionImplementation = async ({
     requestData.caCert,
     mutatedContext.settings,
     requestData.timelinePath,
-    requestData.responseId
+    requestData.responseId,
+    runtime,
   );
   window.main.completeExecutionStep({ requestId });
   if ('error' in response) {
     throw {
-      response: await responseTransform(response, requestData.activeEnvironmentId, renderedRequest, renderedResult.context),
+      response: await responseTransform(
+        response,
+        requestData.activeEnvironmentId,
+        renderedRequest,
+        renderedResult.context,
+      ),
       maxHistoryResponses: requestData.settings.maxHistoryResponses,
       requestMeta,
       error: response.error,
     };
   }
 
-  const baseResponsePatch = await responseTransform(response, requestData.activeEnvironmentId, renderedRequest, renderedResult.context);
-  const is2XXWithBodyPath = baseResponsePatch.statusCode && baseResponsePatch.statusCode >= 200 && baseResponsePatch.statusCode < 300 && baseResponsePatch.bodyPath;
+  const baseResponsePatch = await responseTransform(
+    response,
+    requestData.activeEnvironmentId,
+    renderedRequest,
+    renderedResult.context,
+  );
+  const is2XXWithBodyPath =
+    baseResponsePatch.statusCode &&
+    baseResponsePatch.statusCode >= 200 &&
+    baseResponsePatch.statusCode < 300 &&
+    baseResponsePatch.bodyPath;
   const shouldWriteToFile = shouldPromptForPathAfterResponse && is2XXWithBodyPath;
 
   mutatedContext.request.afterResponseScript = afterResponseScript;
@@ -598,10 +700,16 @@ export const sendActionImplementation = async ({
     response,
     iteration,
     iterationCount,
+    runtime,
   });
   if ('error' in postMutatedContext) {
     throw {
-      response: await responseTransform(response, requestData.activeEnvironmentId, renderedRequest, renderedResult.context),
+      response: await responseTransform(
+        response,
+        requestData.activeEnvironmentId,
+        renderedRequest,
+        renderedResult.context,
+      ),
       maxHistoryResponses: requestData.settings.maxHistoryResponses,
       requestMeta,
       error: postMutatedContext.error,
@@ -613,30 +721,24 @@ export const sendActionImplementation = async ({
   const preTestResults = (mutatedContext.requestTestResults || []).map(
     (result: RequestTestResult): RequestTestResult => ({ ...result, category: 'pre-request' }),
   );
-  const postTestResults = (postMutatedContext?.requestTestResults || []).map(
-    (result: RequestTestResult): RequestTestResult => ({ ...result, category: 'after-response' }),
-  ) || [];
+  const postTestResults =
+    (postMutatedContext?.requestTestResults || []).map(
+      (result: RequestTestResult): RequestTestResult => ({ ...result, category: 'after-response' }),
+    ) || [];
   if (testResultCollector) {
-    testResultCollector.results = [
-      ...testResultCollector.results,
-      ...preTestResults,
-      ...postTestResults,
-    ];
+    testResultCollector.results = [...testResultCollector.results, ...preTestResults, ...postTestResults];
     const timingSteps = await window.main.getExecution({ requestId });
     testResultCollector.duration = timingSteps.reduce((acc: number, cur: TimingStep) => {
       return acc + (cur.duration || 0);
     }, 0);
     testResultCollector.responseId = response._id;
   }
-  const responsePatch = postMutatedContext ?
-    {
-      ...baseResponsePatch,
-      // both pre-request and after-response test results are collected
-      requestTestResults: [
-        ...preTestResults,
-        ...postTestResults,
-      ],
-    }
+  const responsePatch = postMutatedContext
+    ? {
+        ...baseResponsePatch,
+        // both pre-request and after-response test results are collected
+        requestTestResults: [...preTestResults, ...postTestResults],
+      }
     : baseResponsePatch;
 
   if (!shouldWriteToFile) {
@@ -649,26 +751,30 @@ export const sendActionImplementation = async ({
     const header = getContentDispositionHeader(responsePatch.headers || []);
     const name = header
       ? contentDisposition.parse(header.value).parameters.filename
-      : `${requestData.request.name.replace(/\s/g, '-').toLowerCase()}.${responsePatch.contentType && mimeExtension(responsePatch.contentType) || 'unknown'}`;
-    return writeToDownloadPath(path.join(requestMeta.downloadPath, name), responsePatch, requestMeta, requestData.settings.maxHistoryResponses);
-  } else {
-    const defaultPath = window.localStorage.getItem('insomnia.sendAndDownloadLocation');
-    const { filePath } = await window.dialog.showSaveDialog({
-      title: 'Select Download Location',
-      buttonLabel: 'Save',
-      // NOTE: An error will be thrown if defaultPath is supplied but not a String
-      ...(defaultPath ? { defaultPath } : {}),
-    });
-    if (!filePath) {
-      return null;
-    }
-    window.localStorage.setItem('insomnia.sendAndDownloadLocation', filePath);
-    return writeToDownloadPath(filePath, responsePatch, requestMeta, requestData.settings.maxHistoryResponses);
+      : `${requestData.request.name.replace(/\s/g, '-').toLowerCase()}.${(responsePatch.contentType && mimeExtension(responsePatch.contentType)) || 'unknown'}`;
+    return writeToDownloadPath(
+      path.join(requestMeta.downloadPath, name),
+      responsePatch,
+      requestMeta,
+      requestData.settings.maxHistoryResponses,
+    );
   }
+  const defaultPath = window.localStorage.getItem('insomnia.sendAndDownloadLocation');
+  const { filePath } = await window.dialog.showSaveDialog({
+    title: 'Select Download Location',
+    buttonLabel: 'Save',
+    // NOTE: An error will be thrown if defaultPath is supplied but not a String
+    ...(defaultPath ? { defaultPath } : {}),
+  });
+  if (!filePath) {
+    return null;
+  }
+  window.localStorage.setItem('insomnia.sendAndDownloadLocation', filePath);
+  return writeToDownloadPath(filePath, responsePatch, requestMeta, requestData.settings.maxHistoryResponses);
 };
 
 export const createAndSendToMockbinAction: ActionFunction = async ({ request }) => {
-  const patch = await request.json() as Partial<Request>;
+  const patch = (await request.json()) as Partial<Request>;
   invariant(typeof patch.url === 'string', 'URL is required');
   invariant(typeof patch.method === 'string', 'method is required');
   invariant(typeof patch.parentId === 'string', 'mock route ID is required');
@@ -680,21 +786,13 @@ export const createAndSendToMockbinAction: ActionFunction = async ({ request }) 
   invariant(testRequest, 'mock route is missing a testing request');
   const req = await models.request.update(testRequest, patch);
 
-  const {
-    environment,
-    settings,
-    clientCertificates,
-    caCert,
-    activeEnvironmentId,
-    timelinePath,
-    responseId,
-  } = await fetchRequestData(req._id);
+  const { environment, settings, clientCertificates, caCert, activeEnvironmentId, timelinePath, responseId } =
+    await fetchRequestData(req._id);
   window.main.startExecution({ requestId: req._id });
   window.main.addExecutionStep({
     requestId: req._id,
     stepName: 'Rendering request',
-  }
-  );
+  });
 
   const renderResult = await tryToInterpolateRequest({ request: req, environment: environment._id, purpose: 'send' });
   const renderedRequest = await tryToTransformRequestWithPlugins(renderResult);

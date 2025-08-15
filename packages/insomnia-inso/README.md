@@ -33,8 +33,7 @@ $PWD/packages/insomnia-inso/bin/inso -w packages/insomnia-inso/src/db/fixtures/g
 
 ### node-libcurl
 
-`Error: The module '.../insomnia/node_modules/@getinsomnia/node-libcurl/lib/binding/node_libcurl.node'
-was compiled against a different Node.js version using`
+`Error: The module '.../insomnia/node_modules/@getinsomnia/node-libcurl/lib/binding/node_libcurl.node' was compiled against a different Node.js version using`
 
 node-libcurl builds for 3 operating systems and two versions of nodejs. insomnia-inso uses the nodejs build and insomnia app uses the electron build. you can switch between them using the following two commands
 
@@ -68,8 +67,8 @@ npm run serve -w insomnia-smoke-test
 # watch inso
 npm run start -w insomnia-inso
 
-# run api test with dev bundle
-$PWD/packages/insomnia-inso/bin/inso run test "Echo Test Suite" --src $PWD/packages/insomnia-smoke-test/fixtures/inso-nedb --env Dev --verbose
+# run api test with dev bundle. To debug run this in a Javascript Debug Terminal in VSCode
+$PWD/packages/insomnia-inso/bin/inso run test "Echo Test Suite" -w $PWD/packages/insomnia-smoke-test/fixtures/inso-nedb --env Dev --verbose
 ```
 
 ## How to debug pkg
@@ -77,7 +76,7 @@ $PWD/packages/insomnia-inso/bin/inso run test "Echo Test Suite" --src $PWD/packa
 ```sh
 # run modify package command and then a unit test
 npm run package -w insomnia-inso && \
-$PWD/packages/insomnia-inso/binaries/inso run test "Echo Test Suite" --src $PWD/packages/insomnia-smoke-test/fixtures/inso-nedb --env Dev --verbose
+$PWD/packages/insomnia-inso/binaries/inso run test "Echo Test Suite" -w $PWD/packages/insomnia-smoke-test/fixtures/inso-nedb --env Dev --verbose
 
 ```
 
@@ -95,15 +94,15 @@ The `.gitignore` file will explicitly ignore certain database files, to keep the
 
 ## How to run inso with the `inso-nedb` fixture locally?
 
-Set the `--src` argument pointed to `packages/insomnia-smoke-test/fixtures/inso-nedb`:
+Set the `-w` argument pointed to `packages/insomnia-smoke-test/fixtures/inso-nedb`:
 
 ```bash
 # if installed globally
-inso --src <INSO_NEDB_PATH>
+inso -w <INSO_NEDB_PATH>
 
 # using the package bin
-./packages/insomnia-inso/bin/inso --src <INSO_NEDB_PATH>
+./packages/insomnia-inso/bin/inso -w <INSO_NEDB_PATH>
 
 # using a binary
-./packages/insomnia-inso/binaries/insomnia-inso --src <INSO_NEDB_PATH>
+./packages/insomnia-inso/binaries/insomnia-inso -w <INSO_NEDB_PATH>
 ```

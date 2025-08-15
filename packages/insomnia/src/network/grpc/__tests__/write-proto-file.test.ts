@@ -1,6 +1,7 @@
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as models from '../../../models';
@@ -107,12 +108,7 @@ describe('writeProtoFile', () => {
       // Act
       const result = await writeProtoFile(pf);
       // Assert
-      const expectedRootDir = path.join(
-        tmpDirPath,
-        'insomnia-grpc',
-        `${pd._id}.${pd.modified}`,
-        pd.name,
-      );
+      const expectedRootDir = path.join(tmpDirPath, 'insomnia-grpc', `${pd._id}.${pd.modified}`, pd.name);
       const expectedFilePath = pf.name;
       const expectedFullPath = path.join(expectedRootDir, expectedFilePath);
       expect(result.filePath).toEqual(expectedFilePath);
@@ -149,12 +145,7 @@ describe('writeProtoFile', () => {
       // Act
       const result = await writeProtoFile(pfNested);
       // Assert
-      const expectedRootDir = path.join(
-        tmpDirPath,
-        'insomnia-grpc',
-        `${pdRoot._id}.${pdRoot.modified}`,
-        pdRoot.name,
-      );
+      const expectedRootDir = path.join(tmpDirPath, 'insomnia-grpc', `${pdRoot._id}.${pdRoot.modified}`, pdRoot.name);
       const expectedNestedDir = path.join(expectedRootDir, pdNested.name);
       const expectedFilePath = {
         root: pfRoot.name,
@@ -202,12 +193,7 @@ describe('writeProtoFile', () => {
       // Act
       const result = await writeProtoFile(pfNested);
       // Assert
-      const expectedRootDir = path.join(
-        tmpDirPath,
-        'insomnia-grpc',
-        `${pdRoot._id}.${pdRoot.modified}`,
-        pdRoot.name,
-      );
+      const expectedRootDir = path.join(tmpDirPath, 'insomnia-grpc', `${pdRoot._id}.${pdRoot.modified}`, pdRoot.name);
       const expectedNestedDir = path.join(expectedRootDir, pdNested.name);
       const expectedFilePath = {
         root: pfRoot.name,

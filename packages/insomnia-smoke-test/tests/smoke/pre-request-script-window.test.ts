@@ -3,7 +3,7 @@ import { expect } from '@playwright/test';
 import { loadFixture } from '../../playwright/paths';
 import { test } from '../../playwright/test';
 
-test.describe('test hidden window handling', async () => {
+test.describe('test hidden window handling', () => {
   test('can cancel pre-request script', async ({ app, page }) => {
     test.slow(process.platform === 'darwin' || process.platform === 'win32', 'Slow app start on these platforms');
 
@@ -30,6 +30,18 @@ test.describe('test hidden window handling', async () => {
 
     // check the response pane message
     await page.click('text=Request was cancelled');
+
+    await page.getByText('Special template tag format').click();
+    await expect.soft(page.getByText(`{{ _['examplehost']}}`)).toBeVisible();
+
+    await page.getByTestId('request-pane').getByRole('button', { name: 'Send' }).click();
+    await page.getByText('200 OK').click();
+
+    await page.getByText('Multiple template tags format').click();
+    await expect.soft(page.getByText(`{{_['a']['b']['c']['url']}}`)).toBeVisible();
+
+    await page.getByTestId('request-pane').getByRole('button', { name: 'Send' }).click();
+    await page.getByText('200 OK').click();
   });
 
   test('handle hidden browser window getting closed', async ({ app, page }) => {
@@ -68,7 +80,7 @@ test.describe('test hidden window handling', async () => {
     // it should still work
     const statusTag = page.locator('[data-testid="response-status-tag"]:visible');
     await page.waitForSelector('[data-testid="response-status-tag"]:visible');
-    await expect(statusTag).toContainText('200 OK');
+    await expect.soft(statusTag).toContainText('200 OK');
   });
 
   test('window should be restarted if it hangs', async ({ app, page }) => {
@@ -98,11 +110,16 @@ test.describe('test hidden window handling', async () => {
 
     // send the another script with normal script
     await page.getByLabel('Request Collection').getByTestId('simple log').press('Enter');
+
+    const codeMirror = page.getByTestId('OneLineEditor').first().locator('.CodeMirror');
+    await expect
+      .soft(codeMirror.locator('.CodeMirror-line').getByRole('presentation'))
+      .toHaveText('http://127.0.0.1:4010/echo?simple=true');
     await page.getByTestId('request-pane').getByRole('button', { name: 'Send', exact: true }).click();
 
     // it should still work
     const statusTag = page.locator('[data-testid="response-status-tag"]:visible');
     await page.waitForSelector('[data-testid="response-status-tag"]:visible');
-    await expect(statusTag).toContainText('200 OK');
+    await expect.soft(statusTag).toContainText('200 OK');
   });
 });

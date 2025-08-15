@@ -12,20 +12,12 @@ export const MaskedSetting: FC<{
   label: string;
   placeholder?: React.HTMLProps<HTMLInputElement>['placeholder'];
   setting: SettingsOfType<string>;
-}> = ({
-  disabled,
-  help,
-  label,
-  placeholder,
-  setting,
-}) => {
+}> = ({ disabled, help, label, placeholder, setting }) => {
   const [isHidden, setHidden] = useToggle(true);
 
-  const {
-    settings,
-  } = useRootLoaderData();
+  const { settings } = useRootLoaderData();
 
-  if (!settings.hasOwnProperty(setting)) {
+  if (!(setting in settings)) {
     throw new Error(`Invalid setting name ${setting}`);
   }
   const patchSettings = useSettingsPatcher();

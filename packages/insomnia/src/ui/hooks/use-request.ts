@@ -1,5 +1,4 @@
-
-import { useFetcher, useParams } from 'react-router-dom';
+import { useFetcher, useParams } from 'react-router';
 
 import type { GrpcRequest } from '../../models/grpc-request';
 import type { GrpcRequestMeta } from '../../models/grpc-request-meta';
@@ -10,11 +9,18 @@ import type { RequestMeta } from '../../models/request-meta';
 import type { Settings } from '../../models/settings';
 import type { WebSocketRequest } from '../../models/websocket-request';
 import type { WorkspaceMeta } from '../../models/workspace-meta';
+import { useInsomniaTabContext } from '../context/app/insomnia-tab-context';
 
 export const useRequestPatcher = () => {
-  const { organizationId, projectId, workspaceId } = useParams<{ organizationId: string; projectId: string; workspaceId: string }>();
+  const { organizationId, projectId, workspaceId } = useParams<{
+    organizationId: string;
+    projectId: string;
+    workspaceId: string;
+  }>();
+  const { updateTabById } = useInsomniaTabContext();
   const fetcher = useFetcher();
   return (requestId: string, patch: Partial<GrpcRequest> | Partial<Request> | Partial<WebSocketRequest>) => {
+    updateTabById?.(requestId, { temporary: false });
     fetcher.submit(JSON.stringify(patch), {
       action: `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug/request/${requestId}/update`,
       method: 'post',
@@ -24,9 +30,15 @@ export const useRequestPatcher = () => {
 };
 
 export const useRequestMetaPatcher = () => {
-  const { organizationId, projectId, workspaceId } = useParams<{ organizationId: string; projectId: string; workspaceId: string }>();
+  const { organizationId, projectId, workspaceId } = useParams<{
+    organizationId: string;
+    projectId: string;
+    workspaceId: string;
+  }>();
+  const { updateTabById } = useInsomniaTabContext();
   const fetcher = useFetcher();
   return (requestId: string, patch: Partial<GrpcRequestMeta> | Partial<RequestMeta>) => {
+    updateTabById?.(requestId, { temporary: false });
     fetcher.submit(patch, {
       action: `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug/request/${requestId}/update-meta`,
       method: 'post',
@@ -36,9 +48,15 @@ export const useRequestMetaPatcher = () => {
 };
 
 export const useRequestGroupPatcher = () => {
-  const { organizationId, projectId, workspaceId } = useParams<{ organizationId: string; projectId: string; workspaceId: string }>();
+  const { organizationId, projectId, workspaceId } = useParams<{
+    organizationId: string;
+    projectId: string;
+    workspaceId: string;
+  }>();
+  const { updateTabById } = useInsomniaTabContext();
   const fetcher = useFetcher();
   return (requestGroupId: string, patch: Partial<RequestGroup>) => {
+    updateTabById?.(requestGroupId, { temporary: false });
     fetcher.submit(JSON.stringify(patch), {
       action: `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug/request-group/${requestGroupId}/update`,
       method: 'post',
@@ -48,9 +66,15 @@ export const useRequestGroupPatcher = () => {
 };
 
 export const useRequestGroupMetaPatcher = () => {
-  const { organizationId, projectId, workspaceId } = useParams<{ organizationId: string; projectId: string; workspaceId: string }>();
+  const { organizationId, projectId, workspaceId } = useParams<{
+    organizationId: string;
+    projectId: string;
+    workspaceId: string;
+  }>();
+  const { updateTabById } = useInsomniaTabContext();
   const fetcher = useFetcher();
   return (requestGroupId: string, patch: Partial<RequestGroupMeta>) => {
+    updateTabById?.(requestGroupId, { temporary: false });
     fetcher.submit(patch, {
       action: `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug/request-group/${requestGroupId}/update-meta`,
       method: 'post',

@@ -1,4 +1,5 @@
-import path from 'path';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import insomniaAdapter from './insomnia-adapter';
@@ -58,15 +59,13 @@ describe('insomniaAdapter()', () => {
     expect(db?.UnitTest.length).toBe(0);
   });
 
-  it.each([
-    'malformed.yaml',
-    'no-export-format.yaml',
-    'v3-export-format.yaml',
-    'empty.yaml',
-  ])('should throw InsoError if malformed yaml content: %s', async (fileName: string) => {
-    const pathname = path.join(fixturesPath, 'insomnia-v4', fileName);
-    await expect(insomniaAdapter(pathname)).rejects.toThrowErrorMatchingSnapshot();
-  });
+  it.each(['malformed.yaml', 'no-export-format.yaml', 'v3-export-format.yaml', 'empty.yaml'])(
+    'should throw InsoError if malformed yaml content: %s',
+    async (fileName: string) => {
+      const pathname = path.join(fixturesPath, 'insomnia-v4', fileName);
+      await expect(insomniaAdapter(pathname)).rejects.toThrowErrorMatchingSnapshot();
+    },
+  );
 
   it('should return null if pathname is invalid', async () => {
     const pathname = path.join(fixturesPath, 'insomnia-v4', 'insomnia');

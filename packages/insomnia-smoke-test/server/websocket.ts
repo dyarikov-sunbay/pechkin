@@ -1,6 +1,8 @@
-import { IncomingMessage, Server } from 'http';
-import { Socket } from 'net';
-import { WebSocket, WebSocketServer } from 'ws';
+import type { IncomingMessage, Server } from 'node:http';
+import type { Socket } from 'node:net';
+
+import type { WebSocket } from 'ws';
+import { WebSocketServer } from 'ws';
 
 /**
  * Starts an echo WebSocket server that receives messages from a client and echoes them back.
@@ -79,11 +81,11 @@ const upgrade = (wss: WebSocketServer, request: IncomingMessage, socket: Socket,
     return redirectOnSuccess(socket);
   }
   if (request.url === '/delay') {
-    const delaySec = Number.parseInt(request.headers.duration as string || '5');
-    setTimeout(function() {
+    const delaySec = Number.parseInt((request.headers.duration as string) || '5');
+    setTimeout(function () {
       redirectOnSuccess(socket);
     }, delaySec * 1000);
-    return ;
+    return;
   }
   if (request.url === '/basic-auth') {
     // login with user:password

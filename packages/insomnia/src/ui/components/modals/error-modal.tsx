@@ -24,22 +24,26 @@ export const ErrorModal = forwardRef<ErrorModalHandle, ModalProps>((_, ref) => {
     addCancel: false,
   });
 
-  useImperativeHandle(ref, () => ({
-    hide: () => {
-      modalRef.current?.hide();
-    },
-    show: options => {
-      setState(options);
-      modalRef.current?.show();
-    },
-  }), []);
+  useImperativeHandle(
+    ref,
+    () => ({
+      hide: () => {
+        modalRef.current?.hide();
+      },
+      show: options => {
+        setState(options);
+        modalRef.current?.show();
+      },
+    }),
+    [],
+  );
   const { error, title, addCancel } = state;
   const message = state.message || error?.message;
   return (
     <Modal ref={modalRef}>
       <ModalHeader>{title || 'Uh Oh!'}</ModalHeader>
       <ModalBody className="wide pad">
-        {message ? <div className="notice error pre">{message}</div> : null}
+        {message ? <div className="notice error pre whitespace-pre-wrap">{message}</div> : null}
         {error && (
           <details>
             <summary>Stack trace</summary>

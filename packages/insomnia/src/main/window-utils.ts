@@ -1,4 +1,8 @@
-import * as Sentry from '@sentry/electron/main';
+import fs from 'node:fs';
+import * as os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
 import {
   app,
   BrowserWindow,
@@ -12,10 +16,6 @@ import {
   screen,
   shell,
 } from 'electron';
-import fs from 'fs';
-import * as os from 'os';
-import path from 'path';
-import { pathToFileURL } from 'url';
 
 import {
   getAppBuildDate,
@@ -28,10 +28,9 @@ import {
 } from '../common/constants';
 import { docsBase } from '../common/documentation';
 import * as log from '../common/log';
-import { APP_START_TIME, SentryMetrics } from '../common/sentry';
 import { invariant } from '../utils/invariant';
+import ElectronStorage from './electron-storage';
 import { ipcMainOn } from './ipc/electron';
-import LocalStorage from './local-storage';
 
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 720;
@@ -39,7 +38,7 @@ const MINIMUM_WIDTH = 500;
 const MINIMUM_HEIGHT = 400;
 
 const browserWindows = new Map<'Insomnia' | 'HiddenBrowserWindow', ElectronBrowserWindow>();
-let localStorage: LocalStorage | null = null;
+let electronStorage: ElectronStorage | null = null;
 let hiddenWindowIsBusy = false;
 
 interface Bounds {
@@ -50,7 +49,7 @@ interface Bounds {
 }
 
 export function init() {
-  initLocalStorage();
+  initElectronStorage();
 }
 const stopAndWaitForHiddenBrowserWindow = async (runningHiddenBrowserWindow: BrowserWindow) => {
   return await new Promise<void>(resolve => {
@@ -58,6 +57,7 @@ const stopAndWaitForHiddenBrowserWindow = async (runningHiddenBrowserWindow: Bro
     runningHiddenBrowserWindow.on('closed', () => {
       console.log('[main] restarting hidden browser window:', runningHiddenBrowserWindow.id);
       browserWindows.delete('HiddenBrowserWindow');
+
       resolve();
     });
     stopHiddenBrowserWindow();
@@ -119,6 +119,9 @@ export async function createHiddenBrowserWindow() {
       if (browserWindows.get('HiddenBrowserWindow')) {
         console.log('[main] closing hidden browser window');
         browserWindows.delete('HiddenBrowserWindow');
+        // @TODO: This should be set when the window closed is event is emmited so it's guaranteed to be realiable
+        // There might be other events we need to listen to also
+        hiddenWindowIsBusy = false;
       }
     });
 
@@ -156,7 +159,7 @@ export async function createHiddenBrowserWindow() {
       });
     });
 
-    event.senderFrame.postMessage('hidden-browser-window-response-listener', null, [port2]);
+    event.senderFrame?.postMessage('hidden-browser-window-response-listener', null, [port2]);
     await mainWinPortReady;
 
     browserWindows.set('HiddenBrowserWindow', hiddenBrowserWindow);
@@ -164,11 +167,10 @@ export async function createHiddenBrowserWindow() {
 }
 
 export function stopHiddenBrowserWindow() {
-  browserWindows.get('HiddenBrowserWindow')?.close();
-  hiddenWindowIsBusy = false;
+  browserWindows.get('HiddenBrowserWindow')?.destroy();
 }
 
-export function createWindow({ firstLaunch }: { firstLaunch?: boolean } = {}): ElectronBrowserWindow {
+export function createWindow(): ElectronBrowserWindow {
   const { bounds, fullscreen, maximize } = getBounds();
   const { x, y, width, height } = bounds;
 
@@ -243,7 +245,6 @@ export function createWindow({ firstLaunch }: { firstLaunch?: boolean } = {}): E
     event.preventDefault();
     const { protocol } = new URL(url);
     if (protocol === 'http:' || protocol === 'https:') {
-      // eslint-disable-next-line no-restricted-properties
       shell.openExternal(url);
     }
   });
@@ -257,12 +258,7 @@ export function createWindow({ firstLaunch }: { firstLaunch?: boolean } = {}): E
   const appUrl = process.env.APP_RENDER_URL || pathToFileURL(appPath).href;
 
   console.log(`[main] Loading ${appUrl}`);
-  if (firstLaunch) {
-    const duration = performance.now() - APP_START_TIME;
-    Sentry.metrics.distribution(SentryMetrics.MAIN_PROCESS_START_DURATION, duration, {
-      unit: 'millisecond',
-    });
-  }
+
   mainBrowserWindow.loadURL(appUrl);
   // Emitted when the window is closed.
   mainBrowserWindow.on('closed', () => {
@@ -272,12 +268,10 @@ export function createWindow({ firstLaunch }: { firstLaunch?: boolean } = {}): E
   });
 
   mainBrowserWindow.on('focus', () => {
-    console.log('[main] window focus');
     mainBrowserWindow.webContents.send('mainWindowFocusChange', true);
   });
 
   mainBrowserWindow.on('blur', () => {
-    console.log('[main] window blur');
     mainBrowserWindow.webContents.send('mainWindowFocusChange', false);
   });
 
@@ -286,13 +280,12 @@ export function createWindow({ firstLaunch }: { firstLaunch?: boolean } = {}): E
     submenu: [
       {
         label: `${MNEMONIC_SYM}Preferences`,
-        click: (_menuItem, window) => {
-          window?.webContents?.send('toggle-preferences');
+        click: () => {
+          mainBrowserWindow.webContents?.send('toggle-preferences');
         },
       },
       {
         label: `${MNEMONIC_SYM}Changelog`,
-        // eslint-disable-next-line no-restricted-properties
         click: () => shell.openExternal('https://github.com/Kong/insomnia/releases'),
       },
       {
@@ -455,12 +448,13 @@ export function createWindow({ firstLaunch }: { firstLaunch?: boolean } = {}): E
         role: 'minimize',
       },
       // @ts-expect-error -- TSCONVERSION missing in official electron types
-      ...(isMac() ? [
-        {
-          label: `${MNEMONIC_SYM}Close`,
-          role: 'close',
-        },
-      ]
+      ...(isMac()
+        ? [
+            {
+              label: `${MNEMONIC_SYM}Close`,
+              role: 'close',
+            },
+          ]
         : []),
     ],
   };
@@ -476,7 +470,6 @@ export function createWindow({ firstLaunch }: { firstLaunch?: boolean } = {}): E
         click: () => {
           const { protocol } = new URL(docsBase);
           if (protocol === 'http:' || protocol === 'https:') {
-            // eslint-disable-next-line no-restricted-properties
             shell.openExternal(docsBase);
           }
         },
@@ -484,12 +477,8 @@ export function createWindow({ firstLaunch }: { firstLaunch?: boolean } = {}): E
       {
         label: `${MNEMONIC_SYM}Keyboard Shortcuts`,
         accelerator: 'CmdOrCtrl+Shift+?',
-        click: (_menuItem, w) => {
-          if (!w || !w.webContents) {
-            return;
-          }
-
-          w.webContents.send('toggle-preferences-shortcuts');
+        click: () => {
+          mainBrowserWindow.webContents.send('toggle-preferences-shortcuts');
         },
       },
       {
@@ -515,14 +504,12 @@ export function createWindow({ firstLaunch }: { firstLaunch?: boolean } = {}): E
       {
         label: 'Show Software Bill of Materials',
         click: () => {
-          // eslint-disable-next-line no-restricted-properties
           shell.openExternal('https://github.com/Kong/insomnia/releases');
         },
       },
       {
         label: 'Show Software License',
         click: () => {
-          // eslint-disable-next-line no-restricted-properties
           shell.openExternal('https://insomnia.rest/license');
         },
       },
@@ -568,18 +555,32 @@ export function createWindow({ firstLaunch }: { firstLaunch?: boolean } = {}): E
         click: aboutMenuClickHandler,
       },
       {
+        label: 'Check for updates',
+        click: () => {
+          ipcMain.emit('manualUpdateCheck');
+        },
+      },
+      {
         type: 'separator',
       },
     );
   } else {
     // @ts-expect-error -- TSCONVERSION type splitting
-    helpMenu.submenu?.push({
-      type: 'separator',
-    },
+    helpMenu.submenu?.push(
+      {
+        type: 'separator',
+      },
+      {
+        label: 'Check for updates',
+        click: () => {
+          ipcMain.emit('manualUpdateCheck');
+        },
+      },
       {
         label: `${MNEMONIC_SYM}About`,
         click: aboutMenuClickHandler,
-      });
+      },
+    );
   }
 
   const developerMenu: MenuItemConstructorOptions = {
@@ -610,14 +611,14 @@ export function createWindow({ firstLaunch }: { firstLaunch?: boolean } = {}): E
       },
       {
         label: `${MNEMONIC_SYM}Clear a model`,
-        click: (_menuItem, window) => {
-          window?.webContents?.send('clear-model');
+        click: () => {
+          mainBrowserWindow.webContents?.send('clear-model');
         },
       },
       {
         label: `Clear ${MNEMONIC_SYM}all models`,
-        click: (_menuItem, window) => {
-          window?.webContents?.send('clear-all-models');
+        click: () => {
+          mainBrowserWindow.webContents?.send('clear-all-models');
         },
       },
       {
@@ -691,7 +692,13 @@ export function createWindow({ firstLaunch }: { firstLaunch?: boolean } = {}): E
     template.push(developerMenu);
   }
 
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  if (isMac()) {
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  } else {
+    // setMenu only works for Windows and Linux
+    mainBrowserWindow.setMenu(Menu.buildFromTemplate(template));
+  }
+
   return mainBrowserWindow;
 }
 
@@ -731,11 +738,11 @@ function saveBounds() {
 
   // Only save the size if we're not in fullscreen
   if (!fullscreen) {
-    localStorage?.setItem('bounds', browserWindow?.getBounds());
-    localStorage?.setItem('maximize', browserWindow?.isMaximized());
-    localStorage?.setItem('fullscreen', false);
+    electronStorage?.setItem('bounds', browserWindow?.getBounds());
+    electronStorage?.setItem('maximize', browserWindow?.isMaximized());
+    electronStorage?.setItem('fullscreen', false);
   } else {
-    localStorage?.setItem('fullscreen', true);
+    electronStorage?.setItem('fullscreen', true);
   }
 }
 
@@ -745,9 +752,9 @@ function getBounds() {
   let maximize = false;
 
   try {
-    bounds = localStorage?.getItem('bounds', {});
-    fullscreen = localStorage?.getItem('fullscreen', false);
-    maximize = localStorage?.getItem('maximize', false);
+    bounds = electronStorage?.getItem('bounds', {});
+    fullscreen = electronStorage?.getItem('fullscreen', false);
+    maximize = electronStorage?.getItem('maximize', false);
   } catch (error) {
     // This should never happen, but if it does...!
     console.error('Failed to parse window bounds', error);
@@ -766,7 +773,7 @@ const ZOOM_MIN = 0.05;
 
 const getZoomFactor = () => {
   try {
-    return localStorage?.getItem('zoomFactor', ZOOM_DEFAULT);
+    return electronStorage?.getItem('zoomFactor', ZOOM_DEFAULT);
   } catch (error) {
     // This should never happen, but if it does...!
     console.error('Failed to parse zoomFactor', error);
@@ -787,16 +794,19 @@ export const setZoom = (transformer: (current: number) => number) => () => {
   const actual = Math.min(Math.max(ZOOM_MIN, desired), ZOOM_MAX);
 
   browserWindow.webContents.setZoomLevel(actual);
-  localStorage?.setItem('zoomFactor', actual);
+  electronStorage?.setItem('zoomFactor', actual);
 };
 
-function initLocalStorage() {
-  const localStoragePath = path.join(process.env['INSOMNIA_DATA_PATH'] || app.getPath('userData'), 'localStorage');
-  localStorage = new LocalStorage(localStoragePath);
+export function initElectronStorage() {
+  const electronStoragePath = path.join(process.env['INSOMNIA_DATA_PATH'] || app.getPath('userData'), 'localStorage');
+  if (!electronStorage) {
+    electronStorage = new ElectronStorage(electronStoragePath);
+  }
+  return electronStorage;
 }
 
-export function createWindowsAndReturnMain({ firstLaunch }: { firstLaunch?: boolean } = {}) {
-  const mainWindow = browserWindows.get('Insomnia') ?? createWindow({ firstLaunch });
+export function createWindowsAndReturnMain() {
+  const mainWindow = browserWindows.get('Insomnia') ?? createWindow();
   if (!browserWindows.get('HiddenBrowserWindow')) {
     createHiddenBrowserWindow();
   }

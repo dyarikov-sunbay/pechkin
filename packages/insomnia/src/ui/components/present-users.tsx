@@ -1,5 +1,5 @@
 import React from 'react';
-import { useParams, useRouteLoaderData } from 'react-router-dom';
+import { useParams, useRouteLoaderData } from 'react-router';
 
 import { useInsomniaEventStreamContext } from '../context/app/insomnia-event-stream-context';
 import type { ProjectIdLoaderData } from '../routes/project';
@@ -27,10 +27,7 @@ export const PresentUsers = () => {
     .map(user => {
       return {
         key: user.acct,
-        alt:
-          user.firstName || user.lastName
-            ? `${user.firstName} ${user.lastName}`
-            : user.acct,
+        alt: user.firstName || user.lastName ? `${user.firstName} ${user.lastName}` : user.acct,
         src: user.avatar,
       };
     });

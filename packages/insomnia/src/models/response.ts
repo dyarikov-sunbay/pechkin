@@ -1,8 +1,8 @@
-import fs from 'fs';
-import type { RequestTestResult } from 'insomnia-sdk';
-import { Readable } from 'stream';
-import zlib from 'zlib';
+import fs from 'node:fs';
+import type { Readable } from 'node:stream';
+import zlib from 'node:zlib';
 
+import type { RequestTestResult } from '../../../insomnia-scripting-environment/src/objects';
 import { database as db, type Query } from '../common/database';
 import type { ResponseTimelineEntry } from '../main/network/libcurl-promise';
 import * as requestOperations from '../models/helpers/request-operations';
@@ -40,6 +40,8 @@ export interface BaseResponse {
   elapsedTime: number;
   headers: ResponseHeader[];
   bodyPath: string;
+  // if body is less than 5MB, it's stored in memory
+  bodyBuffer?: Buffer;
   // Actual bodies are stored on the filesystem
   timelinePath: string;
   // Actual timelines are stored on the filesystem
@@ -54,9 +56,7 @@ export interface BaseResponse {
 
 export type Response = BaseModel & BaseResponse;
 
-export const isResponse = (model: Pick<BaseModel, 'type'>): model is Response => (
-  model.type === type
-);
+export const isResponse = (model: Pick<BaseModel, 'type'>): model is Response => model.type === type;
 
 export function init(): BaseResponse {
   return {
@@ -145,11 +145,7 @@ export function remove(response: Response) {
   return db.remove(response);
 }
 
-async function _findRecentForRequest(
-  requestId: string,
-  environmentId: string | null,
-  limit: number,
-) {
+async function _findRecentForRequest(requestId: string, environmentId: string | null, limit: number) {
   const query: Query<Response> = {
     parentId: requestId,
   };
@@ -163,10 +159,7 @@ async function _findRecentForRequest(
   return db.findMostRecentlyModified<Response>(type, query, limit);
 }
 
-export async function getLatestForRequest(
-  requestId: string,
-  environmentId: string | null,
-) {
+export async function getLatestForRequest(requestId: string, environmentId: string | null) {
   const responses = await _findRecentForRequest(requestId, environmentId, 1);
   const response = responses[0] as Response | null | undefined;
   return response || null;
@@ -185,7 +178,7 @@ export async function create(patch: Partial<Response> = {}, maxResponses = 20): 
   patch.requestVersionId = requestVersion ? requestVersion._id : null;
   // Filter responses by environment if setting is enabled
   const settings = await models.settings.get();
-  const shouldQueryByEnvId = patch.hasOwnProperty('environmentId') && settings.filterResponsesByEnv;
+  const shouldQueryByEnvId = 'environmentId' in patch && settings.filterResponsesByEnv;
   const query = {
     parentId,
     ...(shouldQueryByEnvId ? { environmentId: patch.environmentId } : {}),
@@ -226,13 +219,12 @@ export const getBodyStream = (
   }
   if (response?.bodyCompression === 'zip') {
     return fs.createReadStream(response?.bodyPath).pipe(zlib.createGunzip());
-  } else {
-    return fs.createReadStream(response?.bodyPath);
   }
+  return fs.createReadStream(response?.bodyPath);
 };
 export const readCurlResponse = async (options: { bodyPath?: string; bodyCompression?: Compression }) => {
   const readFailureMsg = '[main/curlBridgeAPI] failed to read response body message';
-  const bodyBufferOrErrMsg = getBodyBuffer(options, readFailureMsg);
+  const bodyBufferOrErrMsg = await getBodyBuffer(options, readFailureMsg);
   // TODO(jackkav): simplify the fail msg and reuse in other getBodyBuffer renderer calls
 
   if (!bodyBufferOrErrMsg) {
@@ -246,24 +238,26 @@ export const readCurlResponse = async (options: { bodyPath?: string; bodyCompres
 
   return { body: bodyBufferOrErrMsg.toString('utf8'), error: '' };
 };
-export const getBodyBuffer = (
+export const getBodyBuffer = async (
   response?: { bodyPath?: string; bodyCompression?: Compression },
   readFailureValue?: string,
-): Buffer | string | null => {
+): Promise<Buffer | string> => {
   if (!response?.bodyPath) {
     // No body, so return empty Buffer
     return Buffer.alloc(0);
   }
   try {
-    const rawBuffer = fs.readFileSync(response?.bodyPath);
+    const rawBuffer = await fs.promises.readFile(response?.bodyPath);
     if (response?.bodyCompression === 'zip') {
-      return zlib.gunzipSync(rawBuffer);
-    } else {
-      return rawBuffer;
+      return new Promise((resolve, reject) =>
+        zlib.gunzip(rawBuffer, (err, buffer) => (err ? reject(err) : resolve(buffer))),
+      );
     }
+
+    return rawBuffer;
   } catch (err) {
     console.warn('Failed to read response body', err.message);
-    return readFailureValue === undefined ? null : readFailureValue;
+    return readFailureValue === undefined ? Buffer.alloc(0) : readFailureValue;
   }
 };
 
@@ -279,16 +273,18 @@ export function getTimeline(response: Response, showBody?: boolean) {
     const timelineString = rawBuffer.toString();
     const isLegacyTimelineFormat = timelineString.startsWith('[');
     const timeline = isLegacyTimelineFormat
-      ? JSON.parse(timelineString) as ResponseTimelineEntry[]
+      ? (JSON.parse(timelineString) as ResponseTimelineEntry[])
       : deserializeNDJSON(timelineString);
 
-    const body: ResponseTimelineEntry[] = showBody ? [
-      {
-        name: 'DataOut',
-        timestamp: Date.now(),
-        value: fs.readFileSync(bodyPath).toString(),
-      },
-    ] : [];
+    const body: ResponseTimelineEntry[] = showBody
+      ? [
+          {
+            name: 'DataOut',
+            timestamp: Date.now(),
+            value: fs.readFileSync(bodyPath).toString(),
+          },
+        ]
+      : [];
     const output = [...timeline, ...body];
     return output;
   } catch (err) {

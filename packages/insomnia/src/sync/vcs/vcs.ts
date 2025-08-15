@@ -1,9 +1,10 @@
 // @TODOs
 // - [ ] Rename things that run a fetch to fetchSomething...
 // - [ ] Make sure that pull handles updating the parentId to the current project._id
+import crypto from 'node:crypto';
+import path from 'node:path';
+
 import clone from 'clone';
-import crypto from 'crypto';
-import path from 'path';
 
 import * as crypt from '../../account/crypt';
 import * as session from '../../account/session';
@@ -42,7 +43,10 @@ import {
 
 const EMPTY_HASH = crypto.createHash('sha1').digest('hex').replace(/./g, '0');
 
-type ConflictHandler = (conflicts: MergeConflict[], labels: { ours: string; theirs: string }) => Promise<MergeConflict[]>;
+type ConflictHandler = (
+  conflicts: MergeConflict[],
+  labels: { ours: string; theirs: string },
+) => Promise<MergeConflict[]>;
 
 // breaks one array into multiple arrays of size chunkSize
 export function chunkArray<T>(arr: T[], chunkSize: number) {
@@ -210,7 +214,6 @@ export class VCS {
           let previousBlobContent: BaseModel | null = null;
           try {
             previousBlobContent = await this.blobFromLastSnapshot(key);
-
           } catch (e) {
             // No previous blob found
           } finally {
@@ -295,10 +298,7 @@ export class VCS {
 
   static validateBranchName(branchName: string) {
     if (!branchName.match(/^[a-zA-Z0-9][a-zA-Z0-9-_.]{2,}$/)) {
-      return (
-        'Branch names must be at least 3 characters long and can only contain ' +
-        'letters, numbers, - and _'
-      );
+      return 'Branch names must be at least 3 characters long and can only contain ' + 'letters, numbers, - and _';
     }
 
     return '';
@@ -359,9 +359,7 @@ export class VCS {
 
   async checkout(candidates: StatusCandidate[], branchName: string) {
     const branchCurrent = await this._getCurrentBranch();
-    const latestSnapshotCurrent: Snapshot | null = await this._getLatestSnapshot(
-      branchCurrent.name,
-    );
+    const latestSnapshotCurrent: Snapshot | null = await this._getLatestSnapshot(branchCurrent.name);
     const latestStateCurrent = latestSnapshotCurrent ? latestSnapshotCurrent.state : [];
     const branchNext = await this._getOrCreateBranch(branchName);
     const latestSnapshotNext: Snapshot | null = await this._getLatestSnapshot(branchNext.name);
@@ -517,11 +515,7 @@ export class VCS {
     return branches.map(b => b.name);
   }
 
-  async merge(
-    candidates: StatusCandidate[],
-    otherBranchName: string,
-    snapshotMessage?: string,
-  ) {
+  async merge(candidates: StatusCandidate[], otherBranchName: string, snapshotMessage?: string) {
     const branch = await this._getCurrentBranch();
     console.log(`[sync] Merged branch ${otherBranchName} into ${branch.name}`);
     return this._merge(candidates, branch.name, otherBranchName, snapshotMessage);
@@ -581,19 +575,29 @@ export class VCS {
     console.log(`[sync] Created commit ${snapshot.id} (${name})`);
   }
 
-  async pull({ candidates, teamId, teamProjectId, projectId }: { candidates: StatusCandidate[]; teamId: string; teamProjectId: string; projectId: string }) {
+  async pull({
+    candidates,
+    teamId,
+    teamProjectId,
+    projectId,
+  }: {
+    candidates: StatusCandidate[];
+    teamId: string;
+    teamProjectId: string;
+    projectId: string;
+  }) {
     await this._getOrCreateRemoteBackendProject({ teamId, teamProjectId });
     const localBranch = await this._getCurrentBranch();
     const tmpBranchForRemote = await this.customFetch(localBranch.name + '.hidden', localBranch.name);
     // Merge branch and ensure that we use the remote's history when merging
     const message = `Synced latest changes from ${localBranch.name}`;
-    const delta = await this._merge(
+    const delta = (await this._merge(
       candidates,
       localBranch.name,
       tmpBranchForRemote.name,
       message,
       true,
-    ) as unknown as Operation;
+    )) as unknown as Operation;
     // Remove tmp branch
     await this._removeBranch(tmpBranchForRemote);
     console.log(`[sync] Pulled branch ${localBranch.name}`);
@@ -620,7 +624,12 @@ export class VCS {
     return remoteProject;
   }
 
-  async _createRemoteProject({ rootDocumentId, name, teamId, teamProjectId }: BackendProject & { teamId: string; teamProjectId: string }) {
+  async _createRemoteProject({
+    rootDocumentId,
+    name,
+    teamId,
+    teamProjectId,
+  }: BackendProject & { teamId: string; teamProjectId: string }) {
     if (!teamId) {
       throw new Error('teamId should be defined');
     }
@@ -734,11 +743,7 @@ export class VCS {
     const latestStateTrunk = latestSnapshotTrunk ? latestSnapshotTrunk.state : [];
     const latestStateOther = latestSnapshotOther ? latestSnapshotOther.state : [];
     // Perform pre-merge checks
-    const { conflicts: preConflicts, dirty } = preMergeCheck(
-      latestStateTrunk,
-      latestStateOther,
-      candidates,
-    );
+    const { conflicts: preConflicts, dirty } = preMergeCheck(latestStateTrunk, latestStateOther, candidates);
 
     if (preConflicts.length) {
       console.log('[sync] Merge failed', preConflicts);
@@ -747,8 +752,7 @@ export class VCS {
 
     const shouldDoNothing1 = latestSnapshotOther && latestSnapshotOther.id === rootSnapshotId;
     const shouldDoNothing2 = branchOther.snapshots.length === 0;
-    const shouldFastForward1 =
-      rootSnapshot && (!latestSnapshotTrunk || rootSnapshot.id === latestSnapshotTrunk.id);
+    const shouldFastForward1 = rootSnapshot && (!latestSnapshotTrunk || rootSnapshot.id === latestSnapshotTrunk.id);
     const shouldFastForward2 = branchTrunk.snapshots.length === 0;
 
     if (shouldDoNothing1 || shouldDoNothing2) {
@@ -766,23 +770,31 @@ export class VCS {
         latestStateOther,
       );
       // Update state with conflict resolutions applied
-      const conflictsWithContent = await Promise.all(mergeConflicts.map(async conflict => {
-        let mineBlobContent: BaseModel | null = null;
-        let theirsBlobContent: BaseModel | null = null;
-        try {
-          mineBlobContent = conflict.mineBlob ? await this._getBlob(conflict.mineBlob) : null;
-          theirsBlobContent = conflict.theirsBlob ? await this._getBlob(conflict.theirsBlob) : null;
-        } catch (e) {
-          // No previous blob found
-        }
-        return {
-          ...conflict,
-          mineBlobContent,
-          theirsBlobContent,
-        };
-      }));
+      const conflictsWithContent = await Promise.all(
+        mergeConflicts.map(async conflict => {
+          let mineBlobContent: BaseModel | null = null;
+          let theirsBlobContent: BaseModel | null = null;
+          try {
+            mineBlobContent = conflict.mineBlob ? await this._getBlob(conflict.mineBlob) : null;
+            theirsBlobContent = conflict.theirsBlob ? await this._getBlob(conflict.theirsBlob) : null;
+          } catch (e) {
+            // No previous blob found
+          }
+          return {
+            ...conflict,
+            mineBlobContent,
+            theirsBlobContent,
+          };
+        }),
+      );
 
-      const conflictResolutions = await this.handleAnyConflicts(conflictsWithContent, otherBranchName.includes('.hidden') ? { ours: `${trunkBranchName} local`, theirs: `${otherBranchName.replace('.hidden', '')} remote` } : { ours: trunkBranchName, theirs: otherBranchName }, '');
+      const conflictResolutions = await this.handleAnyConflicts(
+        conflictsWithContent,
+        otherBranchName.includes('.hidden')
+          ? { ours: `${trunkBranchName} local`, theirs: `${otherBranchName.replace('.hidden', '')} remote` }
+          : { ours: trunkBranchName, theirs: otherBranchName },
+        '',
+      );
 
       const state = updateStateWithConflictResolutions(stateBeforeConflicts, conflictResolutions);
 
@@ -807,14 +819,8 @@ export class VCS {
     };
   }
 
-  async _createSnapshotFromState(
-    branch: Branch,
-    state: SnapshotState,
-    name: string,
-  ) {
-    const parentId = branch.snapshots.length
-      ? branch.snapshots[branch.snapshots.length - 1]
-      : EMPTY_HASH;
+  async _createSnapshotFromState(branch: Branch, state: SnapshotState, name: string) {
+    const parentId = branch.snapshots.length ? branch.snapshots[branch.snapshots.length - 1] : EMPTY_HASH;
 
     // Create the snapshot
     const id = _generateSnapshotID(parentId, this._backendProjectId(), state);
@@ -838,11 +844,7 @@ export class VCS {
     return snapshot;
   }
 
-  async _runGraphQL<T>(
-    query: string,
-    variables: Record<string, any>,
-    name: string,
-  ): Promise<T> {
+  async _runGraphQL<T>(query: string, variables: Record<string, any>, name: string): Promise<T> {
     const { sessionId } = await this._assertSession();
 
     const { data, errors } = await insomniaFetch<{ data: T; errors: [{ message: string }] }>({
@@ -1140,9 +1142,7 @@ export class VCS {
     return project;
   }
 
-  async _queryTeamMemberKeys(
-    teamId: string,
-  ): Promise<{
+  async _queryTeamMemberKeys(teamId: string): Promise<{
     memberKeys: {
       accountId: string;
       publicKey: string;
@@ -1501,7 +1501,10 @@ export class VCS {
     }
 
     branch.modified = new Date();
-    return this._store.setItem(`/projects/${this._backendProjectId()}/branches/${branch.name.toLowerCase()}.json`, branch);
+    return this._store.setItem(
+      `/projects/${this._backendProjectId()}/branches/${branch.name.toLowerCase()}.json`,
+      branch,
+    );
   }
 
   async _removeBranch(branch: Branch) {
@@ -1518,7 +1521,9 @@ export class VCS {
   }
 
   _getBlob(blobId: string) {
-    return this._store.getItem(`/projects/${this._backendProjectId()}/blobs/${blobId.slice(0, 2)}/${blobId.slice(2)}`) as Promise<BaseModel | null>;
+    return this._store.getItem(
+      `/projects/${this._backendProjectId()}/blobs/${blobId.slice(0, 2)}/${blobId.slice(2)}`,
+    ) as Promise<BaseModel | null>;
   }
 
   async _getBlobs(ids: string[]) {
@@ -1532,7 +1537,10 @@ export class VCS {
   }
 
   async _storeBlob(blobId: string, content: Record<string, any> | null) {
-    return this._store.setItem(`/projects/${this._backendProjectId()}/blobs/${blobId.slice(0, 2)}/${blobId.slice(2)}`, content);
+    return this._store.setItem(
+      `/projects/${this._backendProjectId()}/blobs/${blobId.slice(0, 2)}/${blobId.slice(2)}`,
+      content,
+    );
   }
 
   async _storeBlobs(blobsToStore: Record<string, string>) {
@@ -1540,7 +1548,12 @@ export class VCS {
 
     for (const blobId of Object.keys(blobsToStore)) {
       const buff = Buffer.from(blobsToStore[blobId], 'utf8');
-      promises.push(this._store.setItem(`/projects/${this._backendProjectId()}/blobs/${blobId.slice(0, 2)}/${blobId.slice(2)}`, buff));
+      promises.push(
+        this._store.setItem(
+          `/projects/${this._backendProjectId()}/blobs/${blobId.slice(0, 2)}/${blobId.slice(2)}`,
+          buff,
+        ),
+      );
     }
 
     await Promise.all(promises);
@@ -1550,14 +1563,21 @@ export class VCS {
     const promises: Promise<any>[] = [];
 
     for (const blobId of Object.keys(decryptedBlobs)) {
-      promises.push(this._store.setItemRaw(`/projects/${this._backendProjectId()}/blobs/${blobId.slice(0, 2)}/${blobId.slice(2)}`, decryptedBlobs[blobId]));
+      promises.push(
+        this._store.setItemRaw(
+          `/projects/${this._backendProjectId()}/blobs/${blobId.slice(0, 2)}/${blobId.slice(2)}`,
+          decryptedBlobs[blobId],
+        ),
+      );
     }
 
     await Promise.all(promises);
   }
 
   async _getBlobRaw(blobId: string) {
-    return this._store.getItemRaw(`/projects/${this._backendProjectId()}/blobs/${blobId.slice(0, 2)}/${blobId.slice(2)}`);
+    return this._store.getItemRaw(
+      `/projects/${this._backendProjectId()}/blobs/${blobId.slice(0, 2)}/${blobId.slice(2)}`,
+    );
   }
 
   async _hasBlob(blobId: string) {

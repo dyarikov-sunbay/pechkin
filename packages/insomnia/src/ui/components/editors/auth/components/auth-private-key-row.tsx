@@ -1,5 +1,5 @@
 import React, { type FC, type ReactNode, useCallback } from 'react';
-import { useRouteLoaderData } from 'react-router-dom';
+import { useRouteLoaderData } from 'react-router';
 
 import { toKebabCase } from '../../../../../common/misc';
 import { invariant } from '../../../../../utils/invariant';
@@ -35,7 +35,7 @@ export const AuthPrivateKeyRow: FC<Props> = ({ label, property, help }) => {
   const groupData = useRouteLoaderData('request-group/:requestGroupId') as RequestGroupLoaderData;
   const patchRequest = useRequestPatcher();
   const patchRequestGroup = useRequestGroupPatcher();
-  const patcher = Boolean(reqData) ? patchRequest : patchRequestGroup;
+  const patcher = reqData ? patchRequest : patchRequestGroup;
 
   const { authentication, _id } = reqData?.activeRequest || groupData.activeRequestGroup;
   invariant('privateKey' in authentication, 'must have privateKey property in authentication object');
@@ -43,8 +43,10 @@ export const AuthPrivateKeyRow: FC<Props> = ({ label, property, help }) => {
   const { handleGetRenderContext, handleRender } = useNunjucks();
 
   const privateKey = authentication[property];
-  const onChange = useCallback((value: string) => patcher(_id, { authentication: { ...authentication, [property]: value } }),
-    [_id, authentication, patcher, property]);
+  const onChange = useCallback(
+    (value: string) => patcher(_id, { authentication: { ...authentication, [property]: value } }),
+    [_id, authentication, patcher, property],
+  );
 
   const editPrivateKey = () => {
     showModal(CodePromptModal, {

@@ -16,10 +16,8 @@ import type { Workspace } from '../../../models/workspace';
 import * as plugins from '../../../plugins';
 import * as pluginContexts from '../../../plugins/context';
 import * as templating from '../../../templating';
-import type {
-  NunjucksParsedTag,
-  NunjucksParsedTagArg,
-} from '../../../templating/utils';
+import type { NunjucksParsedTag, NunjucksParsedTagArg } from '../../../templating/types';
+import { sanitizeStrForWin32 } from '../../../templating/utils';
 import * as templateUtils from '../../../templating/utils';
 import { useNunjucks } from '../../context/nunjucks/use-nunjucks';
 import { Dropdown, DropdownItem, DropdownSection, ItemContent } from '../base/dropdown';
@@ -76,7 +74,7 @@ export const TagEditor: FC<Props> = props => {
     error: '',
     variables: [],
   });
-  const { handleRender, handleGetRenderContext } = useNunjucks();
+  const { handleRender, handleGetRenderContext } = useNunjucks({ renderContext: { purpose: 'preview' } });
 
   const refreshModels = useCallback(async () => {
     setState(state => ({ ...state, loadingDocs: true }));
@@ -87,8 +85,11 @@ export const TagEditor: FC<Props> = props => {
     for (const doc of await db.withDescendants(props.workspace, models.request.type)) {
       allDocs[doc.type].push(doc);
     }
-    // @ts-expect-error -- type unsoundness
-    allDocs[models.request.type] = sortRequests((allDocs[models.request.type] || []).concat(allDocs[models.requestGroup.type] || []), props.workspace._id);
+    allDocs[models.request.type] = sortRequests(
+      // @ts-expect-error -- type unsoundness
+      (allDocs[models.request.type] || []).concat(allDocs[models.requestGroup.type] || []),
+      props.workspace._id,
+    );
     setState(state => ({ ...state, allDocs, loadingDocs: false }));
   }, [props.workspace]);
 
@@ -104,13 +105,10 @@ export const TagEditor: FC<Props> = props => {
     // Fix strings: arg.value expects an escaped value (based on updateArg logic)
     for (const arg of activeTagData.args) {
       if (typeof arg.value === 'string') {
-        arg.value = arg.value.replace(/\\/g, '\\\\');
+        arg.value = sanitizeStrForWin32(arg.value);
       }
     }
-    await Promise.all([
-      refreshModels(),
-      update(tagDefinitions, activeTagDefinition, activeTagData, true),
-    ]);
+    await Promise.all([refreshModels(), update(tagDefinitions, activeTagDefinition, activeTagData, true)]);
     const context = await handleGetRenderContext();
     const variables = context.keys;
     setState(state => ({ ...state, variables }));
@@ -137,18 +135,17 @@ export const TagEditor: FC<Props> = props => {
     }
     // Fix strings
     if (typeof argValue === 'string') {
-      argValue = argValue.replace(/\\/g, '\\\\');
+      argValue = sanitizeStrForWin32(argValue);
     }
     // Ensure all arguments exist
-    const defaultArgs = templateUtils.tokenizeTag(templateUtils.getDefaultFill(
-      activeTagDefinition.name,
-      activeTagDefinition.args,
-    )).args;
-    for (let i = 0; i < defaultArgs.length; i++) {
+    const defaultArgs = templateUtils.tokenizeTag(
+      templateUtils.getDefaultFill(activeTagDefinition.name, activeTagDefinition.args),
+    ).args;
+    for (const [i, defaultArg] of defaultArgs.entries()) {
       if (activeTagData.args[i]) {
         continue;
       }
-      activeTagData.args[i] = defaultArgs[i];
+      activeTagData.args[i] = defaultArg;
     }
     const tagData = clone(activeTagData);
     const argData: NunjucksParsedTagArg = tagData.args[argIndex];
@@ -184,10 +181,9 @@ export const TagEditor: FC<Props> = props => {
     if (event.currentTarget.type === 'number') {
       return updateArg(parseFloat(event.currentTarget.value), argIndex);
     } else if (event.currentTarget.type === 'checkbox') {
-      return updateArg(event.currentTarget.checked, argIndex);
-    } else {
-      return updateArg(event.currentTarget.value, argIndex);
+      return updateArg((event.currentTarget as HTMLInputElement).checked, argIndex);
     }
+    return updateArg(event.currentTarget.value, argIndex);
   }
   async function update(
     tagDefinitions: NunjucksParsedTag[],
@@ -202,10 +198,7 @@ export const TagEditor: FC<Props> = props => {
     let activeTagData: NunjucksParsedTag | null = tagData;
 
     if (!activeTagData && tagDefinition) {
-      activeTagData = templateUtils.tokenizeTag(templateUtils.getDefaultFill(
-        tagDefinition.name,
-        tagDefinition.args,
-      ));
+      activeTagData = templateUtils.tokenizeTag(templateUtils.getDefaultFill(tagDefinition.name, tagDefinition.args));
     } else if (!activeTagData && !tagDefinition && state.activeTagData) {
       activeTagData = {
         name: 'custom',
@@ -241,22 +234,6 @@ export const TagEditor: FC<Props> = props => {
     // Make rendering take at least this long so we can see a spinner
     await delay(300 - (Date.now() - start));
     setState(state => ({ ...state, rendering: false, preview }));
-  }
-
-  function resolveRequestGroupPrefix(requestGroupId: string, allRequestGroups: any[]) {
-    let prefix = '';
-    let reqGroup: any;
-    do {
-      // Get prefix from inner most request group.
-      reqGroup = allRequestGroups.find(rg => rg._id === requestGroupId);
-      if (reqGroup == null) {
-        break;
-      }
-      const name = typeof reqGroup.name === 'string' ? reqGroup.name : '';
-      prefix = `[${name}] ` + prefix;
-      requestGroupId = reqGroup.parentId;
-    } while (true);
-    return prefix;
   }
 
   const { error, preview, activeTagDefinition, activeTagData, rendering } = state;
@@ -299,11 +276,15 @@ export const TagEditor: FC<Props> = props => {
           </select>
         </label>
         {/* Warning message when user uses response tag in environment variable and suggest to user after-response script INS-4243 */}
-        {activeTagDefinition?.name === 'response' && props.editorId?.includes('environment') &&
-          <p className='text-sm warning mt-2'>
-            <Icon icon="exclamation-circle" /><a href={docsAfterResponseScript}> We suggest to save your response into an environment variable using after-response script.</a>
+        {activeTagDefinition?.name === 'response' && props.editorId?.includes('environment') && (
+          <p className="warning mt-2 text-sm">
+            <Icon icon="exclamation-circle" />
+            <a href={docsAfterResponseScript}>
+              {' '}
+              We suggest to save your response into an environment variable using after-response script.
+            </a>
           </p>
-        }
+        )}
       </div>
       {activeTagDefinition?.args.map((argDefinition: NunjucksParsedTagArg, index) => {
         // Decide whether or not to show it
@@ -314,10 +295,9 @@ export const TagEditor: FC<Props> = props => {
         if (index < activeTagData.args.length) {
           argData = activeTagData.args[index];
         } else if (state.activeTagDefinition) {
-          const defaultTagData = templateUtils.tokenizeTag(templateUtils.getDefaultFill(
-            state.activeTagDefinition.name,
-            state.activeTagDefinition.args,
-          ));
+          const defaultTagData = templateUtils.tokenizeTag(
+            templateUtils.getDefaultFill(state.activeTagDefinition.name, state.activeTagDefinition.args),
+          );
           argData = defaultTagData.args[index];
         } else {
           return null;
@@ -337,38 +317,44 @@ export const TagEditor: FC<Props> = props => {
         const isVariableAllowed = argDefinition.type !== 'model';
         if (!isVariable) {
           if (argDefinition.type === 'string') {
-            const placeholder =
-              typeof argDefinition.placeholder === 'string' ? argDefinition.placeholder : '';
+            const placeholder = typeof argDefinition.placeholder === 'string' ? argDefinition.placeholder : '';
             const encoding = argDefinition.encoding || 'utf8';
-            argInput = (<input
-              type="text"
-              defaultValue={strValue.replace(/\\\\/g, '\\') || ''}
-              placeholder={placeholder}
-              onChange={handleChange}
-              data-encoding={encoding}
-            />);
+            argInput = (
+              <input
+                type="text"
+                defaultValue={sanitizeStrForWin32(strValue)}
+                placeholder={placeholder}
+                onChange={handleChange}
+                data-encoding={encoding}
+              />
+            );
           } else if (argDefinition.type === 'enum') {
             argInput = (
               <select value={strValue} onChange={handleChange}>
-                {!argDefinition.options?.find(o => o.value === strValue) ? <option value="">-- Select Option --</option> : null}
+                {!argDefinition.options?.find(o => o.value === strValue) ? (
+                  <option value="">-- Select Option --</option>
+                ) : null}
                 {argDefinition.options?.map(option => (
-                  // @ts-expect-error -- TSCONVERSION boolean not accepted by option
-                  <option key={option.value.toString()} value={option.value}>
-                    {option.description ? `${fnOrString(option.displayName, state.activeTagData?.args || [])} – ${option.description}` : fnOrString(option.displayName, state.activeTagData?.args || [])}
+                  <option key={option.value.toString()} value={option.value + ''}>
+                    {option.description
+                      ? `${fnOrString(option.displayName, state.activeTagData?.args || [])} – ${option.description}`
+                      : fnOrString(option.displayName, state.activeTagData?.args || [])}
                   </option>
                 ))}
               </select>
             );
           } else if (argDefinition.type === 'file') {
-            argInput = (<FileInputButton
-              showFileIcon
-              showFileName
-              className="btn btn--clicky btn--super-compact"
-              onChange={path => updateArg(path, index)}
-              path={strValue.replace(/\\\\/g, '\\')}
-              itemtypes={argDefinition.itemTypes}
-              extensions={argDefinition.extensions}
-            />);
+            argInput = (
+              <FileInputButton
+                showFileIcon
+                showFileName
+                className="btn btn--clicky btn--super-compact"
+                onChange={path => updateArg(path, index)}
+                path={sanitizeStrForWin32(strValue)}
+                itemtypes={argDefinition.itemTypes}
+                extensions={argDefinition.extensions}
+              />
+            );
           } else if (argDefinition.type === 'model') {
             argInput = state.loadingDocs ? (
               <select disabled={state.loadingDocs}>
@@ -377,36 +363,41 @@ export const TagEditor: FC<Props> = props => {
             ) : (
               <select value={typeof strValue === 'string' ? strValue : 'unknown'} onChange={handleChange}>
                 <option value="n/a">-- Select Item --</option>
-                {state.allDocs[typeof argDefinition.model === 'string' ? argDefinition.model : 'unknown']?.map((doc: any) => {
-                  let namePrefix: string | null = null;
-                  // Show parent folder with name if it's a request
-                  if (isRequest(doc)) {
-                    const requests = state.allDocs[models.request.type] || [];
-                    const request: any = requests.find(r => r._id === doc._id);
-                    const method = request && typeof request.method === 'string' ? request.method : 'GET';
-                    const parentId = request ? request.parentId : 'n/a';
-                    const allRequestGroups = state.allDocs[models.requestGroup.type] || [];
-                    const requestGroupPrefix = resolveRequestGroupPrefix(parentId, allRequestGroups);
-                    namePrefix = `${requestGroupPrefix + method} `;
-                  }
-                  return (
-                    <option key={doc._id} value={doc._id}>
-                      {namePrefix}
-                      {typeof doc.name === 'string' ? doc.name : 'Unknown Request'}
-                    </option>
-                  );
-                })}
+                {state.allDocs[typeof argDefinition.model === 'string' ? argDefinition.model : 'unknown']?.map(
+                  (doc: any) => {
+                    let namePrefix: string | null = null;
+                    // Show parent folder with name if it's a request
+                    if (isRequest(doc)) {
+                      const requests = state.allDocs[models.request.type] || [];
+                      const request = requests.find(r => r._id === doc._id) as Request;
+                      const method = request && typeof request.method === 'string' ? request.method : 'GET';
+                      const parentId = request ? request.parentId : 'n/a';
+                      const allRequestGroups = state.allDocs[models.requestGroup.type] || [];
+                      const reqGroup = allRequestGroups.find(rg => rg._id === parentId) as RequestGroup | undefined;
+                      const folderName = reqGroup ? `[${typeof reqGroup.name === 'string' ? reqGroup.name : ''}] ` : '';
+                      namePrefix = `${folderName + method} `;
+                    }
+                    return (
+                      <option key={doc._id} value={doc._id}>
+                        {namePrefix}
+                        {typeof doc.name === 'string' ? doc.name : 'Unknown Request'}
+                      </option>
+                    );
+                  },
+                )}
               </select>
             );
           } else if (argDefinition.type === 'boolean') {
             argInput = <input type="checkbox" checked={strValue.toLowerCase() === 'true'} onChange={handleChange} />;
           } else if (argDefinition.type === 'number') {
-            argInput = (<input
-              type="number"
-              defaultValue={strValue || '0'}
-              placeholder={typeof argDefinition.placeholder === 'string' ? argDefinition.placeholder : ''}
-              onChange={handleChange}
-            />);
+            argInput = (
+              <input
+                type="number"
+                defaultValue={strValue || '0'}
+                placeholder={typeof argDefinition.placeholder === 'string' ? argDefinition.placeholder : ''}
+                onChange={handleChange}
+              />
+            );
           } else {
             return null;
           }
@@ -416,8 +407,7 @@ export const TagEditor: FC<Props> = props => {
             ? fnOrString(argDefinition.help, activeTagData.args)
             : '';
         const displayName =
-          typeof argDefinition.displayName === 'string' ||
-            typeof argDefinition.displayName === 'function'
+          typeof argDefinition.displayName === 'string' || typeof argDefinition.displayName === 'function'
             ? fnOrString(argDefinition.displayName, activeTagData.args)
             : '';
         let validationError = '';
@@ -439,22 +429,26 @@ export const TagEditor: FC<Props> = props => {
                 {isVariable && <span className="faded space-left">(Variable)</span>}
                 {help && <HelpTooltip className="space-left">{help}</HelpTooltip>}
                 {validationError && <span className="font-error space-left">{validationError}</span>}
-                {isVariable ? state.variables.length === 0 ? (
-                  <select disabled>
-                    <option>-- No Environment Variables Found --</option>
-                  </select>
-                ) : (
-                  <select value={strValue || ''} onChange={handleChange}>
-                    <option key="n/a" value="NO_VARIABLE">
-                      -- Select Variable --
-                    </option>
+                {isVariable ? (
+                  state.variables.length === 0 ? (
+                    <select disabled>
+                      <option>-- No Environment Variables Found --</option>
+                    </select>
+                  ) : (
+                    <select value={strValue || ''} onChange={handleChange}>
+                      <option key="n/a" value="NO_VARIABLE">
+                        -- Select Variable --
+                      </option>
                       {state.variables.map(v => (
                         <option key={v.name} value={v.name}>
-                        {v.name}
-                      </option>
-                    ))}
-                  </select>
-                ) : argInput}
+                          {v.name}
+                        </option>
+                      ))}
+                    </select>
+                  )
+                ) : (
+                  argInput
+                )}
               </label>
             </div>
             {isVariableAllowed ? (
@@ -464,18 +458,15 @@ export const TagEditor: FC<Props> = props => {
                 })}
               >
                 <Dropdown
-                  aria-label='Variable Dropdown'
+                  aria-label="Variable Dropdown"
                   triggerButton={
                     <Button className="btn btn--clicky">
                       <i className="fa fa-gear" />
                     </Button>
                   }
                 >
-                  <DropdownSection
-                    aria-label="Input Type Section"
-                    title="Input Type"
-                  >
-                    <DropdownItem aria-label='Static Value'>
+                  <DropdownSection aria-label="Input Type Section" title="Input Type">
+                    <DropdownItem aria-label="Static Value">
                       <ItemContent
                         icon={isVariable ? 'check' : ''}
                         label="Static Value"
@@ -495,7 +486,7 @@ export const TagEditor: FC<Props> = props => {
                         }}
                       />
                     </DropdownItem>
-                    <DropdownItem aria-label='Environment Variable'>
+                    <DropdownItem aria-label="Environment Variable">
                       <ItemContent
                         icon={isVariable ? '' : 'check'}
                         label="Environment Variable"
@@ -520,38 +511,34 @@ export const TagEditor: FC<Props> = props => {
             ) : null}
           </div>
         );
-      }
-      )}
+      })}
       {activeTagDefinition?.actions && activeTagDefinition?.actions?.length > 0 ? (
         <div className="form-row">
           <div className="form-control">
             <label>Actions</label>
-            <div className="form-row">{activeTagDefinition.actions.map(action => (
-              <button
-                key={action.name}
-                className="btn btn--clicky btn--largest"
-                type="button"
-                onClick={async () => {
-                  const pluginTemplateTags = await plugins.getTemplateTags();
-                  const templateTags = [...pluginTemplateTags, ...localTemplateTags] as plugins.TemplateTag[];
-                  const activeTemplateTag = templateTags.find(({ templateTag }) => {
-                    return templateTag.name === state.activeTagData?.name;
-                  });
-                  if (activeTemplateTag) {
-                    await action.run(pluginContexts.store.init(activeTemplateTag.plugin));
-                  }
-                  update(
-                    state.tagDefinitions,
-                    state.activeTagDefinition,
-                    state.activeTagData,
-                    true,
-                  );
-                }}
-              >
-                {action.icon ? <i className={action.icon} /> : undefined}
-                {action.name}
-              </button>
-            ))}</div>
+            <div className="form-row">
+              {activeTagDefinition.actions.map(action => (
+                <button
+                  key={action.name}
+                  className="btn btn--clicky btn--largest"
+                  type="button"
+                  onClick={async () => {
+                    const pluginTemplateTags = await plugins.getTemplateTags();
+                    const templateTags = [...pluginTemplateTags, ...localTemplateTags] as plugins.TemplateTag[];
+                    const activeTemplateTag = templateTags.find(({ templateTag }) => {
+                      return templateTag.name === state.activeTagData?.name;
+                    });
+                    if (activeTemplateTag) {
+                      await action.run(pluginContexts.store.init(activeTemplateTag.plugin));
+                    }
+                    update(state.tagDefinitions, state.activeTagDefinition, state.activeTagData, true);
+                  }}
+                >
+                  {action.icon ? <i className={action.icon} /> : undefined}
+                  {action.name}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       ) : null}
@@ -585,12 +572,7 @@ export const TagEditor: FC<Props> = props => {
               position: 'relative',
             }}
             className="txt-sm pull-right icon inline-block"
-            onClick={() => update(
-              state.tagDefinitions,
-              state.activeTagDefinition,
-              state.activeTagData,
-              true,
-            )}
+            onClick={() => update(state.tagDefinitions, state.activeTagDefinition, state.activeTagData, true)}
           >
             refresh{' '}
             <i
@@ -607,5 +589,4 @@ export const TagEditor: FC<Props> = props => {
       </div>
     </div>
   );
-
 };

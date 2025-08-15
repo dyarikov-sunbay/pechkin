@@ -12,11 +12,7 @@
     "module": "ESNext",
     "sourceMap": true,
     /* Runs in the DOM */
-    "lib": [
-      "ES2023",
-      "DOM.Iterable",
-      "DOM"
-    ],
+    "lib": ["ES2023", "DOM.Iterable", "DOM"],
     "jsx": "react",
     /* Strictness */
     "strict": true,
@@ -30,19 +26,15 @@
   "include": [
     ".eslintrc.js",
     "config",
-    "electron-builder.config.js",
     "esbuild.main.ts",
     "esbuild.sr.ts",
     "package.json",
     "scripts",
-    "send-request",
     "src",
-    "tailwind.config.js",
-    "postcss.config.js",
     "vite.config.ts",
     "vite-plugin-electron-node-require",
     "**/*.d.ts",
-    "setup-vitest.ts",
+    "setup-vitest.ts"
   ],
   "exclude": [
     "bin",
@@ -68,5 +60,5 @@
     "src/preload.js",
     "src/hidden-window-preload.js",
     "./src/__mocks__/@getinsomnia/node-libcurl.ts"
-  ],
+  ]
 }

@@ -1,6 +1,7 @@
-import fs from 'fs';
-import { tmpdir } from 'os';
-import path from 'path';
+import fs from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import * as models from '../../../models/index';
@@ -49,7 +50,7 @@ describe('response.*', () => {
     expect(result.response.getStatusCode()).toBe(200);
     expect(result.response.getBytesRead()).toBe(123);
     expect(result.response.getTime()).toBe(321);
-    expect(result.response.getBody().toString()).toBe('Hello World!');
+    expect((await result.response.getBody())?.toString()).toBe('Hello World!');
   });
 
   it('works for basic and empty response', async () => {
@@ -58,7 +59,7 @@ describe('response.*', () => {
     expect(result.response.getStatusCode()).toBe(0);
     expect(result.response.getBytesRead()).toBe(0);
     expect(result.response.getTime()).toBe(0);
-    expect(result.response.getBody().length).toBe(0);
+    expect((await result.response.getBody())?.length).toBe(0);
   });
 
   it('works for getting headers', () => {

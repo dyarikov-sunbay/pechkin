@@ -1,5 +1,7 @@
+import crypto from 'node:crypto';
+
 import { Analytics } from '@segment/analytics-node';
-import crypto from 'crypto';
+import * as Sentry from '@sentry/electron/main';
 import { net } from 'electron';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -63,10 +65,7 @@ function hashString(input: string) {
   return crypto.createHash('sha256').update(input).digest('hex');
 }
 
-export async function trackSegmentEvent(
-  event: SegmentEvent,
-  properties?: Record<string, any>,
-) {
+export async function trackSegmentEvent(event: SegmentEvent, properties?: Record<string, any>) {
   const settings = await models.settings.getOrCreate();
   const userSession = await models.userSession.getOrCreate();
   if (!userSession?.hashedAccountId) {
@@ -75,25 +74,43 @@ export async function trackSegmentEvent(
   const allowAnalytics = settings.enableAnalytics || userSession?.hashedAccountId;
   if (allowAnalytics) {
     try {
-      const anonymousId = await getDeviceId() ?? '';
+      const anonymousId = (await getDeviceId()) ?? '';
       const context = {
         app: { name: getProductName(), version: getAppVersion() },
         os: { name: _getOsName(), version: process.getSystemVersion() },
       };
 
-      analytics.track({
-        event,
-        properties,
-        context,
-        anonymousId,
-        userId: userSession?.hashedAccountId || '',
-      }, error => {
-        if (error) {
-          console.warn('[analytics] Error sending segment event', error);
-        }
-      });
+      analytics.track(
+        {
+          event,
+          properties: {
+            ...properties,
+            platform: 'app',
+          },
+          context,
+          anonymousId,
+          userId: userSession?.hashedAccountId || '',
+        },
+        error => {
+          if (error) {
+            console.warn('[analytics] Error sending segment event', error);
+          }
+        },
+      );
     } catch (error: unknown) {
       console.warn('[analytics] Unexpected error while sending segment event', error);
+    } finally {
+      if (!userSession?.hashedAccountId && [SegmentEvent.unitTestRun, SegmentEvent.unitTestRunAll].includes(event)) {
+        Sentry.captureException(`Run tests by anonymous`, {
+          tags: {
+            source: 'main/analytics',
+          },
+          extra: {
+            organizationId: properties?.organizationId || '',
+            projectId: properties?.projectId || '',
+          },
+        });
+      }
     }
   }
 }
@@ -108,7 +125,7 @@ export async function trackPageView(name: string) {
   const allowAnalytics = settings.enableAnalytics || userSession?.hashedAccountId;
   if (allowAnalytics) {
     try {
-      const anonymousId = await getDeviceId() ?? '';
+      const anonymousId = (await getDeviceId()) ?? '';
       const context = {
         app: { name: getProductName(), version: getAppVersion() },
         os: { name: _getOsName(), version: process.getSystemVersion() },
@@ -141,11 +158,14 @@ export async function trackPageView(name: string) {
 function _getOsName() {
   const platform = getAppPlatform();
   switch (platform) {
-    case 'darwin':
+    case 'darwin': {
       return 'mac';
-    case 'win32':
+    }
+    case 'win32': {
       return 'windows';
-    default:
+    }
+    default: {
       return platform;
+    }
   }
 }

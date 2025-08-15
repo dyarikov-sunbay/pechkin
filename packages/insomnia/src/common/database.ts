@@ -1,9 +1,10 @@
 // This file could be imported by both main and renderer processes, so it should be written in a way that works in both contexts.
 
 /* eslint-disable prefer-rest-params -- don't want to change ...arguments usage for these sensitive functions without more testing */
+import fsPath from 'node:path';
+
 import NeDB from '@seald-io/nedb';
 import electron from 'electron';
-import fsPath from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
 import { mustGetModel } from '../models';
@@ -36,14 +37,14 @@ export interface SpecificQuery {
 export type ChangeType = 'insert' | 'update' | 'remove';
 export const database = {
   // Get all documents of a certain type
-  all: async function<T extends BaseModel>(type: string) {
+  all: async function <T extends BaseModel>(type: string) {
     if (db._empty) {
       return _send<T[]>('all', ...arguments);
     }
     return database.find<T>(type);
   },
 
-  batchModifyDocs: async function({ upsert = [], remove = [] }: Operation) {
+  batchModifyDocs: async function ({ upsert = [], remove = [] }: Operation) {
     if (db._empty) {
       return _send<void>('batchModifyDocs', ...arguments);
     }
@@ -58,7 +59,7 @@ export const database = {
 
   /** buffers database changes and returns a buffer id, automatically call flushChanges in millis,
    * bufferChanges and flushChanges should be called in pair every time documents changes are made to trigger change listeners */
-  bufferChanges: async function(millis = 1000) {
+  bufferChanges: async function (millis = 1000) {
     if (db._empty) {
       return _send<number>('bufferChanges', ...arguments);
     }
@@ -68,7 +69,7 @@ export const database = {
   },
 
   /** buffers database changes and returns a buffer id */
-  bufferChangesIndefinitely: async function() {
+  bufferChangesIndefinitely: async function () {
     if (db._empty) {
       return _send<number>('bufferChangesIndefinitely', ...arguments);
     }
@@ -116,11 +117,11 @@ export const database = {
       },
       ...patches,
     );
-    return database.update<T>(doc);
+    return database.update<T>(doc, false, patches);
   },
 
   /** duplicate doc and its decendents recursively */
-  duplicate: async function<T extends BaseModel>(originalDoc: T, patch: Patch<T> = {}) {
+  duplicate: async function <T extends BaseModel>(originalDoc: T, patch: Patch<T> = {}) {
     if (db._empty) {
       return _send<T>('duplicate', ...arguments);
     }
@@ -165,15 +166,16 @@ export const database = {
   },
 
   /** find documents matching query */
-  find: async function<T extends BaseModel>(
-    type: string,
-    query: Query<T> | string = {},
-    sort: Sort = { created: 1 },
-  ) {
+  find: async function <T extends BaseModel>(type: string, query: Query<T> | string = {}, sort: Sort = { created: 1 }) {
     if (db._empty) {
       return _send<T[]>('find', ...arguments);
     }
     return new Promise<T[]>((resolve, reject) => {
+      if (!db[type]) {
+        console.warn(`[db] No collection for type "${type}"`);
+        resolve([]);
+        return;
+      }
       (db[type] as NeDB<T>)
         .find(query)
         .sort(sort)
@@ -194,7 +196,7 @@ export const database = {
     });
   },
 
-  findMostRecentlyModified: async function<T extends BaseModel>(
+  findMostRecentlyModified: async function <T extends BaseModel>(
     type: string,
     query: Query<T> = {},
     limit: number | null = null,
@@ -229,7 +231,7 @@ export const database = {
   },
 
   /** trigger all changeListeners */
-  flushChanges: async function(id = 0, fake = false) {
+  flushChanges: async function (id = 0, fake = false) {
     if (db._empty) {
       return _send<void>('flushChanges', ...arguments);
     }
@@ -268,7 +270,7 @@ export const database = {
   },
 
   /** get the exact document by id */
-  get: async function<T extends BaseModel>(type: string, id?: string) {
+  get: async function <T extends BaseModel>(type: string, id?: string) {
     if (db._empty) {
       return _send<T>('get', ...arguments);
     }
@@ -276,9 +278,8 @@ export const database = {
     // Short circuit IDs used to represent nothing
     if (!id || id === 'n/a') {
       return null;
-    } else {
-      return database.getWhere<T>(type, { _id: id });
     }
+    return database.getWhere<T>(type, { _id: id });
   },
 
   getMostRecentlyModified: async function <T extends BaseModel>(type: string, query: Query<T> = {}) {
@@ -417,7 +418,7 @@ export const database = {
     console.log('[db] Initialized DB client');
   },
 
-  insert: async function<T extends BaseModel>(doc: T, fromSync = false, initializeModel = true) {
+  insert: async function <T extends BaseModel>(doc: T, fromSync = false, initializeModel = true) {
     if (db._empty) {
       return _send<T>('insert', ...arguments);
     }
@@ -455,7 +456,7 @@ export const database = {
   },
 
   /** remove doc and its descendants */
-  remove: async function<T extends BaseModel>(doc: T, fromSync = false) {
+  remove: async function <T extends BaseModel>(doc: T, fromSync = false) {
     if (db._empty) {
       return _send<void>('remove', ...arguments);
     }
@@ -515,7 +516,7 @@ export const database = {
   },
 
   /** Removes entries without removing their children */
-  unsafeRemove: async function<T extends BaseModel>(doc: T, fromSync = false) {
+  unsafeRemove: async function <T extends BaseModel>(doc: T, fromSync = false) {
     if (db._empty) {
       return _send<void>('unsafeRemove', ...arguments);
     }
@@ -524,7 +525,7 @@ export const database = {
     notifyOfChange('remove', doc, fromSync);
   },
 
-  update: async function<T extends BaseModel>(doc: T, fromSync = false) {
+  update: async function <T extends BaseModel>(doc: T, fromSync = false, patches: Patch<T>[] = []) {
     if (db._empty) {
       return _send<T>('update', ...arguments);
     }
@@ -550,14 +551,14 @@ export const database = {
 
           resolve(docWithDefaults);
           // NOTE: This needs to be after we resolve
-          notifyOfChange('update', docWithDefaults, fromSync);
+          notifyOfChange('update', docWithDefaults, fromSync, patches);
         },
       );
     });
   },
 
   // TODO(TSCONVERSION) the update method above can now take an upsert property
-  upsert: async function<T extends BaseModel>(doc: T, fromSync = false) {
+  upsert: async function <T extends BaseModel>(doc: T, fromSync = false) {
     if (db._empty) {
       return _send<T>('upsert', ...arguments);
     }
@@ -565,9 +566,8 @@ export const database = {
 
     if (existingDoc) {
       return database.update<T>(doc, fromSync);
-    } else {
-      return database.insert<T>(doc, fromSync);
     }
+    return database.insert<T>(doc, fromSync);
   },
 
   /** get all ancestors of specified types of a document */
@@ -599,10 +599,7 @@ export const database = {
       }
 
       // Continue searching for children
-      docsToReturn = [
-        ...docsToReturn,
-        ...foundDocs,
-      ];
+      docsToReturn = [...docsToReturn, ...foundDocs];
       return next(foundDocs);
     }
 
@@ -622,7 +619,11 @@ export const database = {
    * @param queryTypes - An optional array of document types to query. If not provided, all types are queried.
    * @returns A promise that resolves to an array of all descendant documents.
    */
-  withDescendants: async function <T extends BaseModel>(doc: T | null, stopType: string | null = null, queryTypes: string[] = []): Promise<BaseModel[]> {
+  withDescendants: async function <T extends BaseModel>(
+    doc: T | null,
+    stopType: string | null = null,
+    queryTypes: string[] = [],
+  ): Promise<BaseModel[]> {
     if (db._empty) {
       return _send<BaseModel[]>('withDescendants', ...arguments);
     }
@@ -648,10 +649,7 @@ export const database = {
         }
 
         for (const more of await Promise.all(promises)) {
-          foundDocs = [
-            ...foundDocs,
-            ...more,
-          ];
+          foundDocs = [...foundDocs, ...more];
         }
       }
 
@@ -669,9 +667,7 @@ export const database = {
   },
 };
 
-interface DB {
-  [index: string]: NeDB;
-}
+type DB = Record<string, NeDB>;
 
 // @ts-expect-error -- TSCONVERSION _empty doesn't match the index signature, use something other than _empty in future
 const db: DB = {
@@ -698,7 +694,8 @@ let bufferChangesId = 1;
 export type ChangeBufferEvent<T extends BaseModel = BaseModel> = [
   event: ChangeType,
   doc: T,
-  fromSync: boolean
+  fromSync: boolean,
+  patches: Patch<T>[],
 ];
 
 let changeBuffer: ChangeBufferEvent[] = [];
@@ -709,10 +706,16 @@ let changeListeners: ChangeListener[] = [];
 
 /** push changes into the buffer, so that changeListeners can get change contents when database.flushChanges is called,
  * this method should be called whenever a document change happens */
-async function notifyOfChange<T extends BaseModel>(event: ChangeType, doc: T, fromSync: boolean) {
+async function notifyOfChange<T extends BaseModel>(
+  event: ChangeType,
+  doc: T,
+  fromSync: boolean,
+  patches: Patch<T>[] = [],
+) {
   const updatedDoc = doc;
 
-  changeBuffer.push([event, updatedDoc, fromSync]);
+  // TODO: Use object is better than array
+  changeBuffer.push([event, updatedDoc, fromSync, patches]);
 
   // Flush right away if we're not buffering
   if (!bufferingChanges) {
@@ -860,7 +863,7 @@ async function _fixMultipleCookieJars(workspace: Workspace) {
   console.log(`[fix] Merged ${cookieJars.length} cookie jars under ${workspace.name}`);
 }
 
-// Append .git to old git URIs to mimic previous isomorphic-git behaviour
+// Append .git to old git URIs to mimic previous isomorphic-git behavior
 async function _fixOldGitURIs(doc: GitRepository) {
   if (!doc.uriNeedsMigration) {
     return;

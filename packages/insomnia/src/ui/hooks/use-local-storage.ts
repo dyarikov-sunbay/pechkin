@@ -12,7 +12,7 @@ export interface LocalStorageOptions<T> {
     stringify: (value: unknown) => string;
     parse: (value: string) => unknown;
   };
-};
+}
 
 // - `useLocalStorageState()` return type
 // - first two values are the same as `useState`
@@ -33,29 +33,20 @@ export default function useLocalStorageState<T>(
   key: string,
   options?: Omit<LocalStorageOptions<T | undefined>, 'defaultValue'>,
 ): LocalStorageState<T | undefined>;
-export default function useLocalStorageState<T>(
-  key: string,
-  options?: LocalStorageOptions<T>,
-): LocalStorageState<T>;
+export default function useLocalStorageState<T>(key: string, options?: LocalStorageOptions<T>): LocalStorageState<T>;
 export default function useLocalStorageState<T = undefined>(
   key: string,
   options?: LocalStorageOptions<T | undefined>,
 ): LocalStorageState<T | undefined> {
   const serializer = options?.serializer;
   const [defaultValue] = useState(options?.defaultValue);
-  return useLocalStorage(
-    key,
-    defaultValue,
-    options?.storageSync,
-    serializer?.parse,
-    serializer?.stringify,
-  );
+  return useLocalStorage(key, defaultValue, options?.storageSync, serializer?.parse, serializer?.stringify);
 }
 
 function useLocalStorage<T>(
   key: string,
   defaultValue: T | undefined,
-  storageSync: boolean = true,
+  storageSync = true,
   parse: (value: string) => unknown = parseJSON,
   stringify: (value: unknown) => string = JSON.stringify,
 ): LocalStorageState<T | undefined> {
@@ -114,7 +105,7 @@ function useLocalStorage<T>(
         //   `localStorage.setItem()` will throw
         // - trying to access localStorage object when cookies are disabled in Safari throws
         //   "SecurityError: The operation is insecure."
-        // eslint-disable-next-line no-console
+
         goodTry(() => {
           const string = stringify(defaultValue);
           localStorage.setItem(key, string);
@@ -130,8 +121,7 @@ function useLocalStorage<T>(
   );
   const setState = useCallback(
     (newValue: SetStateAction<T | undefined>): void => {
-      const value =
-        newValue instanceof Function ? newValue(storageItem.current.parsed) : newValue;
+      const value = newValue instanceof Function ? newValue(storageItem.current.parsed) : newValue;
 
       // reasons for `localStorage` to throw an error:
       // - maximum quota is exceeded
@@ -194,7 +184,7 @@ function useLocalStorage<T>(
 // notifies all instances using the same `key` to update
 const callbacks = new Set<(key: string) => void>();
 function triggerCallbacks(key: string): void {
-  for (const callback of [...callbacks]) {
+  for (const callback of callbacks) {
     callback(key);
   }
 }

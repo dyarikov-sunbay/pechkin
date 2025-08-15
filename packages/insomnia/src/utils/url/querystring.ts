@@ -1,4 +1,4 @@
-import { format as urlFormat, parse as urlParse } from 'url';
+import { format as urlFormat, parse as urlParse } from 'node:url';
 
 import { setDefaultProtocol } from './protocol';
 
@@ -29,10 +29,12 @@ interface IStrictNullSearchParams extends Omit<ISearchParams, 'value'> {
   value: StrictNullSearchParamsValueType;
 }
 // helper function to process deconstructQueryStringToParams return type base on options parameter
-type ProcessDeconstructFuncReturnType<T> = T extends { strictNullHandling: true } ? IStrictNullSearchParams[] : ISearchParams[];
+type ProcessDeconstructFuncReturnType<T> = T extends { strictNullHandling: true }
+  ? IStrictNullSearchParams[]
+  : ISearchParams[];
 export const getJoiner = (url: string) => {
   url = url || '';
-  return url.indexOf('?') === -1 ? '?' : '&';
+  return !url.includes('?') ? '?' : '&';
 };
 
 /**
@@ -65,10 +67,9 @@ export const extractQueryStringFromUrl = (url: string) => {
   const things = url.split('?');
   if (things.length === 1) {
     return '';
-  } else {
-    const qsWithHash = things.slice(1).join('?');
-    return qsWithHash.replace(/#.*/, '');
   }
+  const qsWithHash = things.slice(1).join('?');
+  return qsWithHash.replace(/#.*/, '');
 };
 
 /**
@@ -80,7 +81,7 @@ export const buildQueryParameter = (
   /** allow empty names and values */
   strict?: boolean,
   /** extra options like strict hanlde null value */
-  options?: IQueryStringOptions
+  options?: IQueryStringOptions,
 ) => {
   strict = strict === undefined ? true : strict;
   const { strictNullHandling = false, encodeParams = true } = options || {};
@@ -105,9 +106,8 @@ export const buildQueryParameter = (
     const name = flexibleEncodeComponent(param.name || '');
 
     return `${name}=${value}`;
-  } else {
-    return flexibleEncodeComponent(param.name);
   }
+  return flexibleEncodeComponent(param.name);
 };
 
 /**
@@ -118,7 +118,7 @@ export const buildQueryStringFromParams = (
   /** allow empty names and values */
   strict?: boolean,
   /** extra options like strict hanlde null value */
-  options?: IQueryStringOptions
+  options?: IQueryStringOptions,
 ) => {
   strict = strict === undefined ? true : strict;
   const { strictNullHandling = false, encodeParams = true } = options || {};
@@ -146,12 +146,12 @@ export const deconstructQueryStringToParams = <T extends IQueryStringOptions>(
   /** allow empty names and values */
   strict?: boolean,
   /** extra deconstruct options like strict hanlde null value */
-  options?: T
+  options?: T,
 ): ProcessDeconstructFuncReturnType<T> => {
   strict = strict === undefined ? true : strict;
   const { strictNullHandling = false } = options || {};
   const pairs: ProcessDeconstructFuncReturnType<T> = [];
-  type ValueType = typeof pairs[number]['value'];
+  type ValueType = (typeof pairs)[number]['value'];
 
   if (!qs) {
     return pairs;
@@ -163,7 +163,7 @@ export const deconstructQueryStringToParams = <T extends IQueryStringOptions>(
     // NOTE: This only splits on first equals sign. '1=2=3' --> ['1', '2=3']
     const [encodedName, ...encodedValues] = stringPair.split('=');
     // Use null as value when strictNullHandling is enabled and no equal sign in string pair
-    const encodedValue: ValueType = (encodedValues.length === 0 && strictNullHandling) ? null : encodedValues.join('=');
+    const encodedValue: ValueType = encodedValues.length === 0 && strictNullHandling ? null : encodedValues.join('=');
 
     let name = '';
     try {
@@ -175,7 +175,7 @@ export const deconstructQueryStringToParams = <T extends IQueryStringOptions>(
 
     let value: ValueType = '';
     try {
-      value = (strictNullHandling && encodedValue === null) ? null : decodeURIComponent(encodedValue || '');
+      value = strictNullHandling && encodedValue === null ? null : decodeURIComponent(encodedValue || '');
     } catch (error) {
       // Just leave it
       value = encodedValue;
@@ -206,41 +206,38 @@ export const smartEncodeUrl = (url: string, encode?: boolean, options?: IQuerySt
 
   if (!encode) {
     return urlWithProto;
-  } else {
-    // Parse the URL into components
-    const parsedUrl = urlParse(urlWithProto);
-
-    // ~~~~~~~~~~~ //
-    // 1. Pathname //
-    // ~~~~~~~~~~~ //
-
-    if (parsedUrl.pathname) {
-      const segments = parsedUrl.pathname.split('/');
-      parsedUrl.pathname = segments
-        .map(s => flexibleEncodeComponent(s, URL_PATH_CHARACTER_WHITELIST))
-        .join('/');
-    }
-
-    // ~~~~~~~~~~~~~~ //
-    // 2. Querystring //
-    // ~~~~~~~~~~~~~~ //
-
-    if (parsedUrl.query) {
-      const qsParams = deconstructQueryStringToParams(parsedUrl.query, true, { strictNullHandling });
-      const encodedQsParams = [];
-      for (const { name, value } of qsParams) {
-        encodedQsParams.push({
-          name: flexibleEncodeComponent(name),
-          value: (strictNullHandling && value === null) ? null : flexibleEncodeComponent(value as string),
-        });
-      }
-
-      parsedUrl.query = buildQueryStringFromParams(encodedQsParams, true, { strictNullHandling });
-      parsedUrl.search = `?${parsedUrl.query}`;
-    }
-
-    return urlFormat(parsedUrl);
   }
+  // Parse the URL into components
+  const parsedUrl = urlParse(urlWithProto);
+
+  // ~~~~~~~~~~~ //
+  // 1. Pathname //
+  // ~~~~~~~~~~~ //
+
+  if (parsedUrl.pathname) {
+    const segments = parsedUrl.pathname.split('/');
+    parsedUrl.pathname = segments.map(s => flexibleEncodeComponent(s, URL_PATH_CHARACTER_WHITELIST)).join('/');
+  }
+
+  // ~~~~~~~~~~~~~~ //
+  // 2. Querystring //
+  // ~~~~~~~~~~~~~~ //
+
+  if (parsedUrl.query) {
+    const qsParams = deconstructQueryStringToParams(parsedUrl.query, true, { strictNullHandling });
+    const encodedQsParams = [];
+    for (const { name, value } of qsParams) {
+      encodedQsParams.push({
+        name: flexibleEncodeComponent(name),
+        value: strictNullHandling && value === null ? null : flexibleEncodeComponent(value as string),
+      });
+    }
+
+    parsedUrl.query = buildQueryStringFromParams(encodedQsParams, true, { strictNullHandling });
+    parsedUrl.search = `?${parsedUrl.query}`;
+  }
+
+  return urlFormat(parsedUrl);
 };
 
 /**

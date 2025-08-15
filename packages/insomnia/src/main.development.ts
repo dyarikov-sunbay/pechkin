@@ -1,9 +1,10 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
 import electron, { app, session } from 'electron';
 import { BrowserWindow } from 'electron';
 import contextMenu from 'electron-context-menu';
 import installExtension, { REACT_DEVELOPER_TOOLS } from 'electron-devtools-installer';
-import fs from 'fs/promises';
-import path from 'path';
 
 import { userDataFolder } from '../config/config.json';
 import { getAppVersion, getProductName, isDevelopment, isMac } from './common/constants';
@@ -12,9 +13,11 @@ import log, { initializeLogging } from './common/log';
 import { SegmentEvent, trackSegmentEvent } from './main/analytics';
 import { registerInsomniaProtocols } from './main/api.protocol';
 import { backupIfNewerVersionAvailable } from './main/backup';
+import { registerGitServiceAPI } from './main/git-service';
 import { ipcMainOn, ipcMainOnce, registerElectronHandlers } from './main/ipc/electron';
 import { registergRPCHandlers } from './main/ipc/grpc';
 import { registerMainHandlers } from './main/ipc/main';
+import { registerSecretStorageHandlers } from './main/ipc/secret-storage';
 import { registerCurlHandlers } from './main/network/curl';
 import { registerWebSocketHandlers } from './main/network/websocket';
 import { watchProxySettings } from './main/proxy';
@@ -30,8 +33,12 @@ import type { ToastNotification } from './ui/components/toast';
 // Override the Electron userData path
 // This makes Chromium use this folder for eg localStorage
 // ensure userData dir change is made before configure sentry SDK (https://docs.sentry.io/platforms/javascript/guides/electron/#app-userdata-directory)
-const dataPath = process.env.INSOMNIA_DATA_PATH || path.join(app.getPath('userData'), '../', isDevelopment() ? 'insomnia-app' : userDataFolder);
+const dataPath =
+  process.env.INSOMNIA_DATA_PATH ||
+  path.join(app.getPath('userData'), '../', isDevelopment() ? 'insomnia-app' : userDataFolder);
 app.setPath('userData', dataPath);
+
+initializeLogging();
 
 initializeSentry();
 
@@ -42,7 +49,6 @@ if (checkIfRestartNeeded()) {
   process.exit(0);
 }
 
-initializeLogging();
 log.info(`Running version ${getAppVersion()}`);
 
 // So if (window) checks don't throw
@@ -60,21 +66,22 @@ app.on('web-contents-created', (_, contents) => {
 // When the app is first launched
 app.on('ready', async () => {
   registerElectronHandlers();
+  // @TODO - Maybe move the register stuff in the registerMainHandlers function
   registerMainHandlers();
   registergRPCHandlers();
+  registerGitServiceAPI();
   registerWebSocketHandlers();
   registerCurlHandlers();
+  registerSecretStorageHandlers();
 
   /**
- * There's no option that prevents Electron from fetching spellcheck dictionaries from Chromium's CDN and passing a non-resolving URL is the only known way to prevent it from fetching.
- * see: https://github.com/electron/electron/issues/22995
- * On macOS the OS spellchecker is used and therefore we do not download any dictionary files.
- * This API is a no-op on macOS.
- */
+   * There's no option that prevents Electron from fetching spellcheck dictionaries from Chromium's CDN and passing a non-resolving URL is the only known way to prevent it from fetching.
+   * see: https://github.com/electron/electron/issues/22995
+   * On macOS the OS spellchecker is used and therefore we do not download any dictionary files.
+   * This API is a no-op on macOS.
+   */
   const disableSpellcheckerDownload = () => {
-    electron.session.defaultSession.setSpellCheckerDictionaryDownloadURL(
-      'https://00.00/'
-    );
+    electron.session.defaultSession.setSpellCheckerDictionaryDownloadURL('https://00.00/');
   };
   disableSpellcheckerDownload();
 
@@ -113,15 +120,21 @@ if (defaultProtocolSuccessful) {
   console.error(`[electron client protocol] FAILED to set default protocol '${fullDefaultProtocol}'`);
   const isDefaultAlready = app.isDefaultProtocolClient(defaultProtocol);
   if (isDefaultAlready) {
-    console.log(`[electron client protocol] the current executable is the default protocol for '${fullDefaultProtocol}'`);
+    console.log(
+      `[electron client protocol] the current executable is the default protocol for '${fullDefaultProtocol}'`,
+    );
   } else {
-    console.log(`[electron client protocol] the current executable is not the default protocol for '${fullDefaultProtocol}'`);
+    console.log(
+      `[electron client protocol] the current executable is not the default protocol for '${fullDefaultProtocol}'`,
+    );
   }
 
   // Note: `getApplicationInfoForProtocol` is not available on Linux, so we use `getApplicationNameForProtocol` instead
   const applicationName = app.getApplicationNameForProtocol(fullDefaultProtocol);
   if (applicationName) {
-    console.log(`[electron client protocol] the default application set for '${fullDefaultProtocol}' is '${applicationName}'`);
+    console.log(
+      `[electron client protocol] the default application set for '${fullDefaultProtocol}' is '${applicationName}'`,
+    );
   } else {
     console.error(`[electron client protocol] the default application set for '${fullDefaultProtocol}' was not found`);
   }
@@ -183,7 +196,7 @@ const _launchApp = async () => {
         console.log('[main] Open Deep Link URL sent from second instance', lastArg);
         window.webContents.send('shell:open', lastArg);
       });
-      window = windowUtils.createWindowsAndReturnMain({ firstLaunch: true });
+      window = windowUtils.createWindowsAndReturnMain();
       const openDeepLinkUrl = (url: string) => {
         console.log('[main] Open Deep Link URL', url);
         window = windowUtils.createWindowsAndReturnMain();
@@ -231,12 +244,22 @@ async function _createModelInstances() {
     const scratchPad = await models.workspace.getById(models.workspace.SCRATCHPAD_WORKSPACE_ID);
     if (!scratchpadProject) {
       console.log('[main] Initializing Scratch Pad Project');
-      await models.project.create({ _id: models.project.SCRATCHPAD_PROJECT_ID, name: getProductName(), remoteId: null, parentId: models.organization.SCRATCHPAD_ORGANIZATION_ID });
+      await models.project.create({
+        _id: models.project.SCRATCHPAD_PROJECT_ID,
+        name: getProductName(),
+        remoteId: null,
+        parentId: models.organization.SCRATCHPAD_ORGANIZATION_ID,
+      });
     }
 
     if (!scratchPad) {
       console.log('[main] Initializing Scratch Pad');
-      await models.workspace.create({ _id: models.workspace.SCRATCHPAD_WORKSPACE_ID, name: 'Scratch Pad', parentId: models.project.SCRATCHPAD_PROJECT_ID, scope: 'collection' });
+      await models.workspace.create({
+        _id: models.workspace.SCRATCHPAD_WORKSPACE_ID,
+        name: 'Scratch Pad',
+        parentId: models.project.SCRATCHPAD_PROJECT_ID,
+        scope: 'collection',
+      });
     }
   } catch (err) {
     console.warn('[main] Failed to create default project. It probably already exists', err);

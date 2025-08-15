@@ -1,13 +1,21 @@
-import { type ExtraRenderInfo } from '../../common/render';
 import * as models from '../../models';
-import type { Request } from '../../models/request';
-import { fetchRequestData, responseTransform, sendCurlAndWriteTimeline, tryToInterpolateRequest, tryToTransformRequestWithPlugins } from '../../network/network';
+import {
+  fetchRequestData,
+  responseTransform,
+  sendCurlAndWriteTimeline,
+  tryToInterpolateRequest,
+  tryToTransformRequestWithPlugins,
+} from '../../network/network';
+import type { PluginTemplateTagContext } from '../../templating/types';
 
-export function init() {
+export function init(): {
+  network: PluginTemplateTagContext['network'];
+} {
   return {
     network: {
-      async sendRequest(req: Request, extraInfo?: ExtraRenderInfo) {
-        const { request,
+      async sendRequest(req, extraInfo) {
+        const {
+          request,
           environment,
           settings,
           clientCertificates,
@@ -15,9 +23,14 @@ export function init() {
           activeEnvironmentId,
           timelinePath,
           responseId,
-        } = await fetchRequestData(req._id);
+        } = await fetchRequestData(req._id, extraInfo?.environmentId);
 
-        const renderResult = await tryToInterpolateRequest({ request, environment: environment._id, purpose: 'send', extraInfo });
+        const renderResult = await tryToInterpolateRequest({
+          request,
+          environment: environment._id,
+          purpose: 'send',
+          extraInfo,
+        });
         const renderedRequest = await tryToTransformRequestWithPlugins(renderResult);
         const response = await sendCurlAndWriteTimeline(
           renderedRequest,
@@ -25,9 +38,14 @@ export function init() {
           caCert,
           settings,
           timelinePath,
-          responseId
+          responseId,
         );
-        const responsePatch = await responseTransform(response, activeEnvironmentId, renderedRequest, renderResult.context);
+        const responsePatch = await responseTransform(
+          response,
+          activeEnvironmentId,
+          renderedRequest,
+          renderResult.context,
+        );
         return models.response.create(responsePatch, settings.maxHistoryResponses);
       },
     },

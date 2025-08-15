@@ -3,7 +3,11 @@ export enum SegmentEvent {
   analyticsDisabled = 'Analytics Disabled',
   collectionCreate = 'Collection Created',
   dataExport = 'Data Exported',
+  exportCompleted = 'Export Completed',
   dataImport = 'Data Imported',
+  importStarted = 'Import Started',
+  importScanned = 'Import Scanned',
+  importCompleted = 'Import Completed',
   documentCreate = 'Document Created',
   mockCreate = 'Mock Created',
   environmentWorkspaceCreate = 'Environment Workspace Created',
@@ -33,17 +37,32 @@ export enum SegmentEvent {
   vcsAction = 'VCS Action Executed',
   buttonClick = 'Button Clicked',
   inviteMember = 'Invite Member',
+  inviteResent = 'Invite Resent',
+  inviteRevoked = 'Invite Revoked',
+  projectCreated = 'Project Created',
+  projectUpdated = 'Project Updated',
+  exportStarted = 'Export Started',
+  exportRequestsChosen = 'Export Requests Chosen',
 }
 
 type PushPull = 'push' | 'pull';
-type VCSAction = PushPull | `force_${PushPull}` |
-  'create_branch' | 'merge_branch' | 'delete_branch' | 'checkout_branch' |
-  'commit' | 'stage_all' | 'stage' | 'unstage_all' | 'unstage' | 'rollback' | 'rollback_all' |
-  'update' | 'setup' | 'clone';
-export function vcsSegmentEventProperties(
-  type: 'git',
-  action: VCSAction,
-  error?: string
-) {
+type VCSAction =
+  | PushPull
+  | `force_${PushPull}`
+  | 'create_branch'
+  | 'merge_branch'
+  | 'delete_branch'
+  | 'checkout_branch'
+  | 'commit'
+  | 'stage_all'
+  | 'stage'
+  | 'unstage_all'
+  | 'unstage'
+  | 'rollback'
+  | 'rollback_all'
+  | 'update'
+  | 'setup'
+  | 'clone';
+export function vcsSegmentEventProperties(type: 'git', action: VCSAction, error?: string) {
   return { type, action, error };
 }

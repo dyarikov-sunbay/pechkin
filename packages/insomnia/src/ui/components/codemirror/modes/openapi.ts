@@ -1,9 +1,9 @@
 import CodeMirror from 'codemirror';
-CodeMirror.defineMode('openapi', function() {
+CodeMirror.defineMode('openapi', function () {
   const cons = ['true', 'false', 'on', 'off', 'yes', 'no'];
   const keywordRegex = new RegExp('\\b((' + cons.join(')|(') + '))$', 'i');
   return {
-    token: function(stream, state) {
+    token: function (stream, state) {
       const ch = stream.peek();
       const esc = state.escaped;
       state.escaped = false;
@@ -105,10 +105,7 @@ CodeMirror.defineMode('openapi', function() {
       }
 
       /* pairs (associative arrays) -> key */
-      if (
-        !state.pair &&
-        stream.match(/^\s*(?:[,[\]{}&*!|>'"%@`][^\s'":]|[^,[\]{}#&*!|>'"%@`])[^#]*?(?=\s*:($|\s))/)
-      ) {
+      if (!state.pair && stream.match(/^\s*(?:[,[\]{}&*!|>'"%@`][^\s'":]|[^,[\]{}#&*!|>'"%@`])[^#]*?(?=\s*:($|\s))/)) {
         state.pair = true;
         state.keyCol = stream.indentation();
         return 'atom';
@@ -125,7 +122,7 @@ CodeMirror.defineMode('openapi', function() {
       stream.next();
       return null;
     },
-    startState: function() {
+    startState: function () {
       return {
         pair: false,
         pairStart: false,

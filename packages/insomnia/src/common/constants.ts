@@ -17,6 +17,9 @@ export const getSkipOnboarding = () => env.INSOMNIA_SKIP_ONBOARDING;
 export const getInsomniaSession = () => env.INSOMNIA_SESSION;
 export const getInsomniaSecretKey = () => env.INSOMNIA_SECRET_KEY;
 export const getInsomniaPublicKey = () => env.INSOMNIA_PUBLIC_KEY;
+export const getInsomniaVaultSalt = () => env.INSOMNIA_VAULT_SALT;
+export const getInsomniaVaultKey = () => env.INSOMNIA_VAULT_KEY;
+export const getInsomniaVaultSrpSecret = () => env.INSOMNIA_VAULT_SRP_SECRET;
 export const getAppVersion = () => version;
 export const getProductName = () => appConfig.productName;
 export const getAppDefaultTheme = () => appConfig.theme;
@@ -30,15 +33,17 @@ export const isLinux = () => getAppPlatform() === 'linux';
 export const isWindows = () => getAppPlatform() === 'win32';
 export const getAppEnvironment = () => process.env.INSOMNIA_ENV || 'production';
 export const isDevelopment = () => getAppEnvironment() === 'development';
-export const getSegmentWriteKey = () => appConfig.segmentWriteKeys[(isDevelopment() || env.PLAYWRIGHT) ? 'development' : 'production'];
+export const getSegmentWriteKey = () =>
+  appConfig.segmentWriteKeys[isDevelopment() || env.PLAYWRIGHT ? 'development' : 'production'];
 export const getSentryDsn = () => appConfig.sentryDsn;
 export const getAppBuildDate = () => new Date(process.env.BUILD_DATE ?? '').toLocaleDateString();
 
-export const getBrowserUserAgent = () => encodeURIComponent(
-  String(window.navigator.userAgent)
-    .replace(new RegExp(`${getAppId()}\\/\\d+\\.\\d+\\.\\d+ `), '')
-    .replace(/Electron\/\d+\.\d+\.\d+ /, ''),
-).replace('%2C', ',');
+export const getBrowserUserAgent = () =>
+  encodeURIComponent(
+    String(window.navigator.userAgent)
+      .replace(new RegExp(`${getAppId()}\\/\\d+\\.\\d+\\.\\d+ `), '')
+      .replace(/Electron\/\d+\.\d+\.\d+ /, ''),
+  ).replace('%2C', ',');
 
 export function updatesSupported() {
   // Updates are not supported on Linux
@@ -64,8 +69,11 @@ export const CDN_INVALIDATION_TTL = 10_000; // 10 seconds
 export const STATUS_CODE_PLUGIN_ERROR = -222;
 export const LARGE_RESPONSE_MB = 5;
 export const HUGE_RESPONSE_MB = 100;
-export const FLEXIBLE_URL_REGEX = /^(http|https):\/\/[\wàâäèéêëîïôóœùûüÿçÀÂÄÈÉÊËÎÏÔŒÙÛÜŸÇ\-_.]+[/\wàâäèéêëîïôóœùûüÿçÀÂÄÈÉÊËÎÏÔŒÙÛÜŸÇ.\-+=:\][@%^*&!#?;$~'(),]*/;
+export const FLEXIBLE_URL_REGEX =
+  /^(http|https):\/\/[\wàâäèéêëîïôóœùûüÿçÀÂÄÈÉÊËÎÏÔŒÙÛÜŸÇ\-_.]+[/\wàâäèéêëîïôóœùûüÿçÀÂÄÈÉÊËÎÏÔŒÙÛÜŸÇ.\-+=:\][@%^*&!#?;$~'(),]*/;
 export const CHECK_FOR_UPDATES_INTERVAL = 1000 * 60 * 60 * 24;
+
+export const ACCEPTED_NODE_CA_FILE_EXTS = ['.pem', '.crt', '.cer', '.p12'];
 
 // Available editor key map
 export enum EditorKeyMap {
@@ -82,16 +90,19 @@ export const MNEMONIC_SYM = isMac() ? '' : '&';
 export const displayModifierKey = (key: keyof Omit<KeyCombination, 'keyCode'>) => {
   const mac = isMac();
   switch (key) {
-    case 'ctrl':
+    case 'ctrl': {
       return mac ? '⌃' : 'Ctrl';
+    }
 
-    case 'alt':
+    case 'alt': {
       return mac ? '⌥' : 'Alt';
+    }
 
-    case 'shift':
+    case 'shift': {
       return mac ? '⇧' : 'Shift';
+    }
 
-    case 'meta':
+    case 'meta': {
       if (mac) {
         return '⌘';
       }
@@ -105,9 +116,11 @@ export const displayModifierKey = (key: keyof Omit<KeyCombination, 'keyCode'>) =
       // Note: To avoid using a Microsoft trademark, much Linux documentation refers to the key as "Super". This can confuse some users who still consider it a "Windows key". In KDE Plasma documentation it is called the Meta key even though the X11 "Super" shift bit is used.
       // see: https://en.wikipedia.org/wiki/Super_key_(keyboard_button)
       return 'Super';
+    }
 
-    default:
+    default: {
       throw new Error(key + 'unrecognized key');
+    }
   }
 };
 
@@ -119,17 +132,16 @@ export enum UpdateURL {
 
 // API
 export const getApiBaseURL = () => env.INSOMNIA_API_URL || 'https://api.insomnia.rest';
-export const getMockServiceURL = () => env.INSOMNIA_MOCK_API_URL || 'https://mock.insomnia.rest';
+export const getMockServiceURL = () => env.INSOMNIA_MOCK_API_URL || 'https://mock.insomnia.run';
 
 export const getMockServiceBinURL = (mockServer: MockServer, path: string) => {
   if (!mockServer.useInsomniaCloud) {
     return `${mockServer.url}/bin/${mockServer._id}${path}`;
-  } else {
-    const baseUrl = getMockServiceURL();
-    const url = new URL(baseUrl);
-    url.host = mockServer._id.replace('_', '-') + '.' + url.host;
-    return url.origin + path;
   }
+  const baseUrl = getMockServiceURL();
+  const url = new URL(baseUrl);
+  url.host = mockServer._id.replace('_', '-') + '.' + url.host;
+  return url.origin + path;
 };
 
 export const getAIServiceURL = () => env.INSOMNIA_AI_URL || 'https://ai-helper.insomnia.rest';
@@ -140,7 +152,8 @@ export const getUpdatesBaseURL = () => env.INSOMNIA_UPDATES_URL || 'https://upda
 export const getAppWebsiteBaseURL = () => env.INSOMNIA_APP_WEBSITE_URL || 'https://app.insomnia.rest';
 
 // GitHub API
-export const getGitHubGraphQLApiURL = () => env.INSOMNIA_GITHUB_API_URL || 'https://api.github.com/graphql';
+export const getGitHubRestApiUrl = () => env.INSOMNIA_GITHUB_REST_API_URL || 'https://api.github.com';
+export const getGitHubGraphQLApiURL = () => env.INSOMNIA_GITHUB_API_URL || `${getGitHubRestApiUrl()}/graphql`;
 
 // SYNC
 export const DEFAULT_BRANCH_NAME = 'master';
@@ -157,11 +170,7 @@ export const MAX_EDITOR_FONT_SIZE = 24;
 export const DEFAULT_SIDEBAR_SIZE = 25;
 
 // Activities
-export type GlobalActivity =
-  | 'spec'
-  | 'debug'
-  | 'unittest'
-  | 'home';
+export type GlobalActivity = 'spec' | 'debug' | 'unittest' | 'home';
 export const ACTIVITY_SPEC: GlobalActivity = 'spec';
 export const ACTIVITY_DEBUG: GlobalActivity = 'debug';
 export const ACTIVITY_UNIT_TEST: GlobalActivity = 'unittest';
@@ -174,25 +183,29 @@ export const isDesignActivity = (activity?: string): activity is GlobalActivity 
   switch (activity) {
     case ACTIVITY_SPEC:
     case ACTIVITY_DEBUG:
-    case ACTIVITY_UNIT_TEST:
+    case ACTIVITY_UNIT_TEST: {
       return true;
+    }
 
     case ACTIVITY_HOME:
-    default:
+    default: {
       return false;
+    }
   }
 };
 
 export const isCollectionActivity = (activity?: string): activity is GlobalActivity => {
   switch (activity) {
-    case ACTIVITY_DEBUG:
+    case ACTIVITY_DEBUG: {
       return true;
+    }
 
     case ACTIVITY_SPEC:
     case ACTIVITY_UNIT_TEST:
     case ACTIVITY_HOME:
-    default:
+    default: {
       return false;
+    }
   }
 };
 
@@ -201,11 +214,13 @@ export const isValidActivity = (activity: string): activity is GlobalActivity =>
     case ACTIVITY_SPEC:
     case ACTIVITY_DEBUG:
     case ACTIVITY_UNIT_TEST:
-    case ACTIVITY_HOME:
+    case ACTIVITY_HOME: {
       return true;
+    }
 
-    default:
+    default: {
       return false;
+    }
   }
 };
 
@@ -342,12 +357,7 @@ export const sortOrderName: Record<SortOrder, string> = {
   [SORT_TYPE_ASC]: 'Requests First',
 };
 
-export type DashboardSortOrder =
-  | 'name-asc'
-  | 'name-desc'
-  | 'created-asc'
-  | 'created-desc'
-  | 'modified-desc';
+export type DashboardSortOrder = 'name-asc' | 'name-desc' | 'created-asc' | 'created-desc' | 'modified-desc';
 
 export const DASHBOARD_SORT_ORDERS: DashboardSortOrder[] = [
   SORT_MODIFIED_DESC,
@@ -368,11 +378,10 @@ export const dashboardSortOrderName: Record<DashboardSortOrder, string> = {
 export type PreviewMode = 'friendly' | 'source' | 'raw';
 
 export function getPreviewModeName(previewMode: PreviewMode, useLong = false) {
-  if (previewModeMap.hasOwnProperty(previewMode)) {
+  if (previewMode in previewModeMap) {
     return useLong ? previewModeMap[previewMode][1] : previewModeMap[previewMode][0];
-  } else {
-    return '';
   }
+  return '';
 }
 export function getMimeTypeFromContentType(contentType: string) {
   // Check if the Content-Type header is provided
@@ -402,11 +411,10 @@ export function getContentTypeName(contentType?: string | null, useLong = false)
 }
 
 export function getAuthTypeName(authType?: string, useLong = false) {
-  if (authType && authTypesMap.hasOwnProperty(authType)) {
+  if (authType && authType in authTypesMap) {
     return useLong ? authTypesMap[authType][1] : authTypesMap[authType][0];
-  } else {
-    return 'Auth';
   }
+  return 'Auth';
 }
 
 export function getContentTypeFromHeaders(headers: any[], defaultValue: string | null = null) {
@@ -421,8 +429,7 @@ export function getContentTypeFromHeaders(headers: any[], defaultValue: string |
 // Sourced from https://developer.mozilla.org/en-US/docs/Web/HTTP/Status
 export const RESPONSE_CODE_DESCRIPTIONS: Record<number, string> = {
   // Special
-  [STATUS_CODE_PLUGIN_ERROR]:
-    'An Insomnia plugin threw an error which prevented the request from sending',
+  [STATUS_CODE_PLUGIN_ERROR]: 'An Insomnia plugin threw an error which prevented the request from sending',
   // 100s
   100: 'This interim response indicates that everything so far is OK and that the client should continue with the request or ignore it if it is already finished.',
   101: 'This code is sent in response to an Upgrade: request header by the client and indicates the protocol the server is switching to.',

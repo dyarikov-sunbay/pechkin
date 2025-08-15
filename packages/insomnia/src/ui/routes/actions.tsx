@@ -1,20 +1,28 @@
+import path from 'node:path';
+
 import type { IRuleResult } from '@stoplight/spectral-core';
 import { generate, runTests, type Test } from 'insomnia-testing';
 import type { TestResults } from 'insomnia-testing/src/run/entities';
-import path from 'path';
-import { type ActionFunction, redirect } from 'react-router-dom';
+import { type ActionFunction, redirect } from 'react-router';
 
+import { version } from '../../../package.json';
 import { parseApiSpec, resolveComponentSchemaRefs } from '../../common/api-specs';
-import { ACTIVITY_DEBUG, getAIServiceURL } from '../../common/constants';
+import { ACTIVITY_DEBUG, getAIServiceURL, METHOD_GET } from '../../common/constants';
 import { database } from '../../common/database';
-import { database as db } from '../../common/database';
-import { importResourcesToWorkspace, scanResources } from '../../common/import';
+import {
+  importResourcesToNewWorkspace,
+  importResourcesToWorkspace,
+  scanResources,
+  type ScanResult,
+} from '../../common/import';
+import { getInsomniaV5DataExport, importInsomniaV5Data } from '../../common/insomnia-v5';
 import { generateId } from '../../common/misc';
 import * as models from '../../models';
 import { EnvironmentType } from '../../models/environment';
+import type { OauthProviderName } from '../../models/git-credentials';
 import { getById, update } from '../../models/helpers/request-operations';
 import type { MockServer } from '../../models/mock-server';
-import { isRemoteProject, type Project } from '../../models/project';
+import { isGitProject, isRemoteProject, type Project } from '../../models/project';
 import { isRequest, type Request } from '../../models/request';
 import { isRequestGroup, isRequestGroupId } from '../../models/request-group';
 import { isRequestGroupMeta } from '../../models/request-group-meta';
@@ -23,24 +31,149 @@ import type { UnitTestSuite } from '../../models/unit-test-suite';
 import { isCollection, isEnvironment, scopeToActivity, type Workspace } from '../../models/workspace';
 import type { WorkspaceMeta } from '../../models/workspace-meta';
 import { getSendRequestCallback } from '../../network/unit-test-feature';
-import { initializeLocalBackendProjectAndMarkForSync, pushSnapshotOnInitialize } from '../../sync/vcs/initialize-backend-project';
+import { initializeLocalBackendProjectAndMarkForSync } from '../../sync/vcs/initialize-backend-project';
 import { VCSInstance } from '../../sync/vcs/insomnia-sync';
 import { insomniaFetch } from '../../ui/insomniaFetch';
 import { invariant } from '../../utils/invariant';
 import { SegmentEvent } from '../analytics';
-import { SpectralRunner } from '../worker/spectral-run';
+import { SpectralRunner } from '../worker/spectral-handler';
+import { syncNewWorkspaceIfNeeded } from './import';
 
-export const updateProjectAction: ActionFunction = async ({
-  request,
-  params,
-}) => {
-  const formData = await request.formData();
+// Project
+export const createNewProjectAction: ActionFunction = async ({ request, params }) => {
+  const { organizationId } = params;
 
-  const name = formData.get('name');
+  invariant(organizationId, 'Organization ID is required');
+  const newProjectData = (await request.json()) as {
+    name: string;
+    storageType: 'local' | 'remote' | 'git';
+    authorName: string;
+    authorEmail: string;
+    uri: string;
+    username: string;
+    password: string;
+    token: string;
+    oauth2format: OauthProviderName;
+  };
+
+  const user = await models.userSession.getOrCreate();
+  const sessionId = user.id;
+  invariant(sessionId, 'User must be logged in to create a project');
+
+  if (newProjectData.storageType === 'local') {
+    const project = await models.project.create({
+      name: newProjectData.name,
+      parentId: organizationId,
+    });
+
+    window.main.trackSegmentEvent({
+      event: SegmentEvent.projectCreated,
+      properties: {
+        storage: 'local',
+      },
+    });
+
+    return redirect(`/organization/${organizationId}/project/${project._id}`);
+  }
+
+  if (newProjectData.storageType === 'git') {
+    const { projectId, errors } = await window.main.git.cloneGitRepo({
+      organizationId,
+      ...newProjectData,
+    });
+
+    if (errors) {
+      return {
+        error: errors.join(', '),
+      };
+    }
+
+    window.main.trackSegmentEvent({
+      event: SegmentEvent.projectCreated,
+      properties: {
+        storage: 'git',
+      },
+    });
+
+    return redirect(`/organization/${organizationId}/project/${projectId}`);
+  }
+
+  try {
+    const newCloudProject = await insomniaFetch<
+      | {
+          id: string;
+          name: string;
+        }
+      | {
+          error: string;
+          message?: string;
+        }
+    >({
+      path: `/v1/organizations/${organizationId}/team-projects`,
+      method: 'POST',
+      data: {
+        name: newProjectData.name,
+      },
+      sessionId,
+    });
+
+    if (newCloudProject && !('error' in newCloudProject)) {
+      window.main.trackSegmentEvent({
+        event: SegmentEvent.projectCreated,
+        properties: {
+          storage: 'remote',
+        },
+      });
+    }
+
+    if (!newCloudProject || 'error' in newCloudProject) {
+      let error = 'An unexpected error occurred while creating the project. Please try again.';
+      if (newCloudProject.error === 'FORBIDDEN') {
+        error = 'You do not have permission to create a cloud project in this organization.';
+      }
+
+      if (newCloudProject.error === 'NEEDS_TO_UPGRADE') {
+        error = 'Upgrade your account in order to create new Cloud Projects.';
+      }
+
+      if (newCloudProject.error === 'PROJECT_STORAGE_RESTRICTION') {
+        error = newCloudProject.message ?? 'The owner of the organization allows only Local Vault project creation.';
+      }
+
+      return {
+        error,
+      };
+    }
+
+    const project = await models.project.create({
+      _id: newCloudProject.id,
+      name: newCloudProject.name,
+      remoteId: newCloudProject.id,
+      parentId: organizationId,
+    });
+
+    return redirect(`/organization/${organizationId}/project/${project._id}`);
+  } catch (err) {
+    console.log(err);
+    return {
+      error:
+        err instanceof Error
+          ? err.message
+          : `An unexpected error occurred while creating the project. Please try again. ${err}`,
+    };
+  }
+};
+
+export interface UpdateProjectActionResult {
+  error?: string;
+  success?: boolean;
+}
+
+export const updateProjectAction: ActionFunction = async ({ request, params }) => {
+  const { name, storageType, ...projectData } = await request.json();
+
   invariant(typeof name === 'string', 'Name is required');
-
-  const type = formData.get('type');
-  invariant(type === 'local' || type === 'remote', 'Project type is required');
+  invariant(storageType === 'local' || storageType === 'remote' || storageType === 'git', 'Project type is required');
 
   const { organizationId, projectId } = params;
   invariant(projectId, 'Project ID is required');
@@ -54,7 +187,7 @@ export const updateProjectAction: ActionFunction = async ({
 
   try {
     // If its a cloud project, and we are renaming, then patch
-    if (sessionId && project.remoteId && type === 'remote' && name !== project.name) {
+    if (sessionId && project.remoteId && storageType === 'remote' && name !== project.name) {
       const response = await insomniaFetch<void | {
         error: string;
         message?: string;
@@ -70,7 +203,7 @@ export const updateProjectAction: ActionFunction = async ({
       if (response && 'error' in response) {
         let error = 'An unexpected error occurred while updating your project. Please try again.';
         if (response.error === 'FORBIDDEN') {
-          error = response.error;
+          error = 'You do not have permission to create a cloud project in this organization.';
         }
 
         if (response.error === 'NEEDS_TO_UPGRADE') {
@@ -87,11 +220,13 @@ export const updateProjectAction: ActionFunction = async ({
       }
 
       await models.project.update(project, { name });
-      return null;
+      return {
+        success: true,
+      };
     }
 
     // convert from cloud to local
-    if (type === 'local' && project.remoteId) {
+    if (storageType === 'local' && project.remoteId) {
       const response = await insomniaFetch<void | {
         error: string;
         message?: string;
@@ -100,6 +235,15 @@ export const updateProjectAction: ActionFunction = async ({
         method: 'DELETE',
         sessionId,
       });
+
+      if (response && !response.error) {
+        window.main.trackSegmentEvent({
+          event: SegmentEvent.projectUpdated,
+          properties: {
+            storage: 'local',
+          },
+        });
+      }
 
       if (response && 'error' in response) {
         let error = 'An unexpected error occurred while updating your project. Please try again.';
@@ -118,17 +262,22 @@ export const updateProjectAction: ActionFunction = async ({
       }
 
       await models.project.update(project, { name, remoteId: null });
-      return null;
+      return {
+        success: true,
+      };
     }
-    // convert from local to cloud
-    if (type === 'remote' && !project.remoteId) {
-      const newCloudProject = await insomniaFetch<{
-        id: string;
-        name: string;
-      } | {
-        error: string;
-        message?: string;
-      }>({
+    // convert from local/git to cloud
+    if (storageType === 'remote' && !project.remoteId) {
+      const newCloudProject = await insomniaFetch<
+        | {
+            id: string;
+            name: string;
+          }
+        | {
+            error: string;
+            message?: string;
+          }
+      >({
         path: `/v1/organizations/${organizationId}/team-projects`,
         method: 'POST',
         data: {
@@ -136,6 +285,15 @@ export const updateProjectAction: ActionFunction = async ({
         },
         sessionId,
       });
+
+      if (newCloudProject && !('error' in newCloudProject)) {
+        window.main.trackSegmentEvent({
+          event: SegmentEvent.projectUpdated,
+          properties: {
+            storage: 'remote',
+          },
+        });
+      }
 
       if (!newCloudProject || 'error' in newCloudProject) {
         let error = 'An unexpected error occurred while updating your project. Please try again.';
@@ -156,18 +314,121 @@ export const updateProjectAction: ActionFunction = async ({
         };
       }
 
-      await models.project.update(project, { name, remoteId: newCloudProject.id });
-      return null;
+      if (project.gitRepositoryId) {
+        const gitRepository = await models.gitRepository.getById(project.gitRepositoryId);
+
+        gitRepository && (await models.gitRepository.remove(gitRepository));
+      }
+
+      await models.project.update(project, { name, remoteId: newCloudProject.id, gitRepositoryId: null });
+      return {
+        success: true,
+      };
+    }
+
+    // convert to git
+    if (storageType === 'git' && !project.gitRepositoryId) {
+      if (project.remoteId) {
+        const response = await insomniaFetch<void | {
+          error: string;
+          message?: string;
+        }>({
+          path: `/v1/organizations/${organizationId}/team-projects/${project.remoteId}`,
+          method: 'DELETE',
+          sessionId,
+        });
+
+        if (response && !response.error) {
+          window.main.trackSegmentEvent({
+            event: SegmentEvent.projectUpdated,
+            properties: {
+              storage: 'git',
+            },
+          });
+        }
+
+        if (response && 'error' in response) {
+          let error = 'An unexpected error occurred while updating your project. Please try again.';
+
+          if (response.error === 'FORBIDDEN') {
+            error = 'You do not have permission to change this project.';
+          }
+
+          if (response.error === 'PROJECT_STORAGE_RESTRICTION') {
+            error = 'The owner of the organization allows only Cloud Sync project creation, please try again.';
+          }
+
+          return {
+            error,
+          };
+        }
+      }
+
+      const { errors } = await window.main.git.cloneGitRepo({
+        organizationId,
+        cloneIntoProjectId: project._id,
+        ...projectData,
+      });
+
+      const projectWorkspaces = await models.workspace.findByParentId(project._id);
+      const bufferId = await database.bufferChanges();
+      const workspaceMetas = await database.find<WorkspaceMeta>(models.workspaceMeta.type, {
+        parentId: { $in: projectWorkspaces.map(w => w._id) },
+      });
+
+      for (const workspaceMeta of workspaceMetas) {
+        if (!workspaceMeta.gitFilePath) {
+          await models.workspaceMeta.update(workspaceMeta, {
+            gitFilePath: `insomnia.${workspaceMeta.parentId}.yaml`,
+          });
+        }
+      }
+
+      await database.flushChanges(bufferId);
+
+      if (errors) {
+        return {
+          error: errors.join(', '),
+        };
+      }
+
+      return {
+        success: true,
+      };
+    }
+
+    // convert from git to local
+    if (storageType === 'local' && project.gitRepositoryId) {
+      const gitRepository = await models.gitRepository.getById(project.gitRepositoryId);
+
+      gitRepository && (await models.gitRepository.remove(gitRepository));
+      await models.project.update(project, { name, gitRepositoryId: null });
+
+      return {
+        success: true,
+      };
     }
 
     // local project rename
     await models.project.update(project, { name });
-    return null;
 
+    window.main.trackSegmentEvent({
+      event: SegmentEvent.projectUpdated,
+      properties: {
+        storage: 'local',
+      },
+    });
+
+    return {
+      success: true,
+    };
   } catch (err) {
     console.log(err);
     return {
-      error: err instanceof Error ? err.message : `An unexpected error occurred while renaming the project. Please try again. ${err}`,
+      error:
+        err instanceof Error
+          ? err.message
+          : `An unexpected error occurred while renaming the project. Please try again. ${err}`,
     };
   }
 };
@@ -184,6 +445,7 @@ export const deleteProjectAction: ActionFunction = async ({ params }) => {
   invariant(sessionId, 'User must be logged in to delete a project');
 
   try {
+    const bufferId = await database.bufferChanges();
     if (project.remoteId) {
       const response = await insomniaFetch<void | {
         error: string;
@@ -196,19 +458,31 @@ export const deleteProjectAction: ActionFunction = async ({ params }) => {
 
       if (response && 'error' in response) {
         return {
-          error: response.error === 'FORBIDDEN' ? 'You do not have permission to delete this project.' : 'An unexpected error occurred while deleting the project. Please try again.',
+          error:
+            response.error === 'FORBIDDEN'
+              ? 'You do not have permission to delete this project.'
+              : 'An unexpected error occurred while deleting the project. Please try again.',
         };
       }
+    }
+
+    if (project.gitRepositoryId) {
+      const gitRepository = await models.gitRepository.getById(project.gitRepositoryId);
+      gitRepository && (await models.gitRepository.remove(gitRepository));
     }
 
     await models.stats.incrementDeletedRequestsForDescendents(project);
     await models.project.remove(project);
 
+    await database.flushChanges(bufferId);
     return redirect(`/organization/${organizationId}`);
   } catch (err) {
     console.log(err);
     return {
-      error: err instanceof Error ? err.message : `An unexpected error occurred while deleting the project. Please try again. ${err}`,
+      error:
+        err instanceof Error
+          ? err.message
+          : `An unexpected error occurred while deleting the project. Please try again. ${err}`,
     };
   }
 };
@@ -234,11 +508,23 @@ export const moveProjectAction: ActionFunction = async ({ request, params }) => 
   return null;
 };
 
+export function safeToUseInsomniaFileName(fileName: string) {
+  const fileNameWithoutExt = fileName.replace('.yaml', '').replace('.yml', '');
+  const fileNameWithSafeCharacters = fileNameWithoutExt
+    .toLowerCase()
+    .trim()
+    // Replace all non-alphanumeric characters with underscores, allow -
+    .replace(/[^a-z0-9_-]/g, '_');
+
+  return fileNameWithSafeCharacters;
+}
+
+export function safeToUseInsomniaFileNameWithExt(fileName: string) {
+  return `${safeToUseInsomniaFileName(fileName)}.yaml`;
+}
+
 // Workspace
-export const createNewWorkspaceAction: ActionFunction = async ({
-  params,
-  request,
-}) => {
+export const createNewWorkspaceAction: ActionFunction = async ({ params, request }) => {
   const { organizationId, projectId } = params;
   invariant(organizationId, 'Organization ID is required');
   invariant(projectId, 'Project ID is required');
@@ -250,10 +536,14 @@ export const createNewWorkspaceAction: ActionFunction = async ({
   const formData = await request.formData();
 
   const name = formData.get('name');
+
   invariant(typeof name === 'string', 'Name is required');
 
   const scope = formData.get('scope');
-  invariant(scope === 'design' || scope === 'collection' || scope === 'mock-server' || scope === 'environment', 'Scope is required');
+  invariant(
+    scope === 'design' || scope === 'collection' || scope === 'mock-server' || scope === 'environment',
+    'Scope is required',
+  );
 
   const flushId = await database.bufferChanges();
 
@@ -264,6 +554,18 @@ export const createNewWorkspaceAction: ActionFunction = async ({
     scope,
     parentId: projectId,
   });
+
+  if (isGitProject(project)) {
+    const workspaceMeta = await models.workspaceMeta.getOrCreateByParentId(workspace._id);
+
+    const fileName = formData.get('fileName')?.toString() || workspace.name;
+
+    const safeToUseFileNameWithExtension = safeToUseInsomniaFileNameWithExt(fileName);
+
+    await models.workspaceMeta.update(workspaceMeta, {
+      gitFilePath: path.join(formData.get('folderPath')?.toString() || '', safeToUseFileNameWithExtension),
+    });
+  }
 
   if (scope === 'mock-server') {
     const mockServerType = formData.get('mockServerType');
@@ -300,7 +602,9 @@ export const createNewWorkspaceAction: ActionFunction = async ({
     window.main.trackSegmentEvent({
       event: SegmentEvent.mockCreate,
     });
-    return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspace._id}/${scopeToActivity(workspace.scope)}`);
+    return redirect(
+      `/organization/${organizationId}/project/${projectId}/workspace/${workspace._id}/${scopeToActivity(workspace.scope)}`,
+    );
   }
 
   if (scope === 'design') {
@@ -315,7 +619,7 @@ export const createNewWorkspaceAction: ActionFunction = async ({
   await database.flushChanges(flushId);
 
   const { id } = await models.userSession.getOrCreate();
-  if (id && !workspaceMeta.gitRepositoryId) {
+  if (id && !workspaceMeta.gitRepositoryId && !isGitProject(project)) {
     const vcs = VCSInstance();
     await initializeLocalBackendProjectAndMarkForSync({
       vcs,
@@ -335,7 +639,37 @@ export const createNewWorkspaceAction: ActionFunction = async ({
     event: event,
   });
 
-  return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspace._id}/${scopeToActivity(workspace.scope)}`);
+  // Parse the URL from the request
+  const url = new URL(request.url);
+
+  // Get a specific query parameter
+  const withRequest = url.searchParams.get('withRequest');
+
+  if (withRequest) {
+    const settings = await models.settings.getOrCreate();
+    const defaultHeaders = settings.disableAppVersionUserAgent
+      ? []
+      : [{ name: 'User-Agent', value: `insomnia/${version}` }];
+
+    const activeRequestId = (
+      await models.request.create({
+        parentId: workspace._id,
+        method: METHOD_GET,
+        name: 'My first request',
+        headers: defaultHeaders,
+      })
+    )._id;
+
+    window.main.trackSegmentEvent({ event: SegmentEvent.requestCreate, properties: { requestType: 'HTTP' } });
+
+    return redirect(
+      `/organization/${organizationId}/project/${projectId}/workspace/${workspace._id}/debug/request/${activeRequestId}`,
+    );
+  }
+
+  return redirect(
+    `/organization/${organizationId}/project/${projectId}/workspace/${workspace._id}/${scopeToActivity(workspace.scope)}`,
+  );
 };
 
 async function deleteWorkspaceFromCloud(workspace: Workspace, project: Project) {
@@ -349,7 +683,10 @@ async function deleteWorkspaceFromCloud(workspace: Workspace, project: Project) 
       await vcs.archiveProject();
     } catch (err) {
       return {
-        error: err instanceof Error ? err.message : `An unexpected error occurred while deleting the workspace. Please try again. ${err}`,
+        error:
+          err instanceof Error
+            ? err.message
+            : `An unexpected error occurred while deleting the workspace. Please try again. ${err}`,
       };
     }
   }
@@ -362,10 +699,7 @@ async function deleteWorkspaceFromLocal(workspace: Workspace) {
   await models.workspace.remove(workspace);
 }
 
-async function deleteWorkspace(
-  workspace: Workspace | null,
-  project: Project | null,
-) {
+async function deleteWorkspace(workspace: Workspace | null, project: Project | null) {
   invariant(workspace, 'Workspace not found');
   invariant(project, 'Project not found');
 
@@ -379,10 +713,7 @@ async function deleteWorkspace(
   return null;
 }
 
-export const deleteWorkspaceAction: ActionFunction = async ({
-  params,
-  request,
-}) => {
+export const deleteWorkspaceAction: ActionFunction = async ({ params, request }) => {
   const { organizationId, projectId } = params;
   invariant(projectId, 'projectId is required');
 
@@ -404,65 +735,6 @@ export const deleteWorkspaceAction: ActionFunction = async ({
   return redirect(`/organization/${organizationId}/project/${projectId}`);
 };
 
-async function duplicateWorkspace(
-  workspace: Workspace | null,
-  duplicateToProject: Project | null,
-  newWorkspaceName: string,
-  needPushSnapshotOnInitialize: boolean = false,
-) {
-  invariant(workspace, 'Workspace not found');
-  invariant(duplicateToProject, 'Project not found');
-  async function duplicate(
-    workspace: Workspace,
-    { name, parentId }: Pick<Workspace, 'name' | 'parentId'>,
-  ) {
-    const newWorkspace = await db.duplicate(workspace, {
-      name,
-      parentId,
-    });
-    await models.apiSpec.updateOrCreateForParentId(newWorkspace._id, {
-      fileName: name,
-    });
-    models.stats.incrementCreatedRequestsForDescendents(newWorkspace);
-    return newWorkspace;
-  }
-  const newWorkspace = await duplicate(workspace, {
-    name: newWorkspaceName,
-    parentId: duplicateToProject._id,
-  });
-  // Create default env, cookie jar, and meta
-  await models.environment.getOrCreateForParentId(newWorkspace._id);
-  await models.cookieJar.getOrCreateForParentId(newWorkspace._id);
-  const workspaceMeta = await models.workspaceMeta.getOrCreateByParentId(newWorkspace._id);
-
-  const isGitSync = !!workspaceMeta.gitRepositoryId;
-
-  // Automatically sync to cloud if needed
-  if (isRemoteProject(duplicateToProject) && !isGitSync) {
-    try {
-      const { id } = await models.userSession.getOrCreate();
-      // Mark for sync if logged in and in the expected project
-      if (id) {
-        const vcs = VCSInstance().newInstance();
-        await initializeLocalBackendProjectAndMarkForSync({
-          vcs,
-          workspace: newWorkspace,
-        });
-        if (needPushSnapshotOnInitialize) {
-          await pushSnapshotOnInitialize({
-            vcs,
-            workspace: newWorkspace,
-            project: duplicateToProject,
-          });
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to initialize local backend project', e);
-    }
-  }
-  return newWorkspace;
-}
-
 /** Duplicate workspace to other project and automatically sync to cloud if needed  */
 export const duplicateWorkspaceAction: ActionFunction = async ({ request }) => {
   const formData = await request.formData();
@@ -478,10 +750,34 @@ export const duplicateWorkspaceAction: ActionFunction = async ({ request }) => {
   invariant(oldWorkspace, 'Workspace not found');
 
   // duplicate the workspace to the new project
-  const newProject = await models.project.getById(newProjectId) as Project;
-  const newWorkspace = await duplicateWorkspace(oldWorkspace, newProject, newWorkspaceName || oldWorkspace.name, true);
-  return redirect(`/organization/${newOrgId}/project/${newProjectId}/workspace/${newWorkspace._id}/${scopeToActivity(newWorkspace.scope)}`);
+  const newProject = (await models.project.getById(newProjectId)) as Project;
+  const workspaceExport = await getInsomniaV5DataExport({
+    workspaceId: oldWorkspace._id,
+    includePrivateEnvironments: true,
+  });
 
+  const data = importInsomniaV5Data(workspaceExport);
+
+  const newWorkspace = await importResourcesToNewWorkspace({
+    projectId: newProject._id,
+    workspaceToImport: {
+      ...oldWorkspace,
+      name: newWorkspaceName || oldWorkspace.name,
+    },
+    resourceCacheItem: {
+      resources: data,
+      content: JSON.stringify(data, null, 2),
+      importer: {
+        id: 'insomnia-v5',
+        name: 'Insomnia v5 Importer',
+        description: 'Import Insomnia v5 data',
+      },
+    },
+    syncNewWorkspaceIfNeeded,
+  });
+  return redirect(
+    `/organization/${newOrgId}/project/${newProjectId}/workspace/${newWorkspace._id}/${scopeToActivity(newWorkspace.scope)}`,
+  );
 };
 
 export const updateWorkspaceAction: ActionFunction = async ({ request }) => {
@@ -499,12 +795,26 @@ export const updateWorkspaceAction: ActionFunction = async ({ request }) => {
       fileName: patch.name || workspace.name,
     });
   }
+
   if (workspace.scope === 'mock-server') {
     const mockServer = await models.mockServer.getByParentId(workspaceId);
     invariant(mockServer, 'No MockServer found for this workspace');
 
+    let useInsomniaCloud = mockServer.useInsomniaCloud;
+    if (patch.mockServerType && typeof patch.mockServerType === 'string') {
+      useInsomniaCloud = patch.mockServerType === 'cloud';
+    }
+
+    let mockServerUrl = mockServer.url;
+
+    if (patch.mockServerUrl && typeof patch.mockServerUrl === 'string') {
+      mockServerUrl = patch.mockServerUrl;
+    }
+
     await models.mockServer.update(mockServer, {
       name: patch.name || workspace.name,
+      useInsomniaCloud,
+      url: mockServerUrl,
     });
   }
 
@@ -512,13 +822,30 @@ export const updateWorkspaceAction: ActionFunction = async ({ request }) => {
 
   await models.workspace.update(workspace, patch);
 
-  return null;
+  const project = await models.project.getById(workspace.parentId);
+  invariant(project, 'Project not found');
+  if (isGitProject(project)) {
+    const workspaceMeta = await models.workspaceMeta.getOrCreateByParentId(workspace._id);
+
+    const existingPathDir = path.dirname(workspaceMeta.gitFilePath || '');
+    let fileName = path.basename(workspaceMeta.gitFilePath || '');
+
+    if (patch.fileName && typeof patch.fileName === 'string') {
+      fileName = patch.fileName;
+    }
+
+    await models.workspaceMeta.update(workspaceMeta, {
+      gitFilePath: path.join(existingPathDir, safeToUseInsomniaFileNameWithExt(fileName)),
+    });
+  }
+
+  return {
+    success: true,
+  };
 };
 
 export const moveWorkspaceIntoProjectAction: ActionFunction = async ({ request, params }) => {
-  const {
-    organizationId,
-  } = params;
+  const { organizationId } = params;
 
   invariant(typeof organizationId === 'string', 'Organization ID is required');
 
@@ -543,16 +870,13 @@ export const moveWorkspaceIntoProjectAction: ActionFunction = async ({ request, 
 export const updateWorkspaceMetaAction: ActionFunction = async ({ request, params }) => {
   const { workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
-  const patch = await request.json() as Partial<WorkspaceMeta>;
+  const patch = (await request.json()) as Partial<WorkspaceMeta>;
   await models.workspaceMeta.updateByParentId(workspaceId, patch);
   return null;
 };
 
 // Test Suite
-export const createNewTestSuiteAction: ActionFunction = async ({
-  request,
-  params,
-}) => {
+export const createNewTestSuiteAction: ActionFunction = async ({ request, params }) => {
   const { organizationId, workspaceId, projectId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
   const formData = await request.formData();
@@ -566,7 +890,9 @@ export const createNewTestSuiteAction: ActionFunction = async ({
 
   window.main.trackSegmentEvent({ event: SegmentEvent.testSuiteCreate });
 
-  return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/test/test-suite/${unitTestSuite._id}`);
+  return redirect(
+    `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/test/test-suite/${unitTestSuite._id}`,
+  );
 };
 
 export const deleteTestSuiteAction: ActionFunction = async ({ params }) => {
@@ -586,19 +912,13 @@ export const deleteTestSuiteAction: ActionFunction = async ({ params }) => {
   return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/test`);
 };
 
-export const runAllTestsAction: ActionFunction = async ({
-  params,
-}) => {
+export const runAllTestsAction: ActionFunction = async ({ params }) => {
   const { organizationId, projectId, workspaceId, testSuiteId } = params;
   invariant(typeof projectId === 'string', 'Project ID is required');
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
   invariant(typeof testSuiteId === 'string', 'Test Suite ID is required');
 
-  const unitTests = await database.find<UnitTest>(
-    models.unitTest.type,
-    { parentId: testSuiteId },
-    { metaSortKey: 1 }
-  );
+  const unitTests = await database.find<UnitTest>(models.unitTest.type, { parentId: testSuiteId }, { metaSortKey: 1 });
   invariant(unitTests, 'No unit tests found');
 
   const tests: Test[] = unitTests
@@ -632,37 +952,45 @@ export const runAllTestsAction: ActionFunction = async ({
 
   try {
     results = await runTests(src, { sendRequest });
-  } catch (err) {
-    // create a result manually so that it can be displayed in the UI
-    results.stats.failures = 1;
-    results.stats.tests = 1;
-    results.tests.push(
-      {
-        currentRetry: 0,
-        duration: 0,
-        err: {
-          actual: undefined,
-          expected: undefined,
-          message: err.toString(),
-          multiple: [],
-          operator: undefined,
-          showDiff: false,
-          stack: '',
-        },
-        file: '',
-        fullTitle: 'Test Error',
-        id: '',
-        title: 'Test Error',
-      },
-    );
-  } finally {
     const testResult = await models.unitTestResult.create({
       results,
       parentId: workspaceId,
     });
-    window.main.trackSegmentEvent({ event: SegmentEvent.unitTestRun });
+    window.main.trackSegmentEvent({ event: SegmentEvent.unitTestRunAll, properties: { organizationId, projectId } });
 
-    return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/test/test-suite/${testSuiteId}/test-result/${testResult._id}`);
+    return redirect(
+      `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/test/test-suite/${testSuiteId}/test-result/${testResult._id}`,
+    );
+  } catch (err) {
+    // create a result manually so that it can be displayed in the UI
+    results.stats.failures = 1;
+    results.stats.tests = 1;
+    results.tests.push({
+      currentRetry: 0,
+      duration: 0,
+      err: {
+        actual: undefined,
+        expected: undefined,
+        message: err.toString(),
+        multiple: [],
+        operator: undefined,
+        showDiff: false,
+        stack: '',
+      },
+      file: '',
+      fullTitle: 'Test Error',
+      id: '',
+      title: 'Test Error',
+    });
+    const testResult = await models.unitTestResult.create({
+      results,
+      parentId: workspaceId,
+    });
+    window.main.trackSegmentEvent({ event: SegmentEvent.unitTestRunAll, properties: { organizationId, projectId } });
+
+    return redirect(
+      `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/test/test-suite/${testSuiteId}/test-result/${testResult._id}`,
+    );
   }
 };
 
@@ -672,7 +1000,7 @@ export const updateTestSuiteAction: ActionFunction = async ({ request, params })
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
   invariant(typeof projectId === 'string', 'Project ID is required');
 
-  const data = await request.json() as Partial<UnitTestSuite>;
+  const data = (await request.json()) as Partial<UnitTestSuite>;
 
   const unitTestSuite = await database.getWhere<UnitTestSuite>(models.unitTestSuite.type, {
     _id: testSuiteId,
@@ -724,7 +1052,7 @@ export const deleteTestAction: ActionFunction = async ({ params }) => {
 
 export const updateTestAction: ActionFunction = async ({ request, params }) => {
   const { testId } = params;
-  const data = await request.json() as Partial<UnitTest>;
+  const data = (await request.json()) as Partial<UnitTest>;
 
   const unitTest = await database.getWhere<UnitTest>(models.unitTest.type, {
     _id: testId,
@@ -775,45 +1103,50 @@ export const runTestAction: ActionFunction = async ({ params }) => {
 
   try {
     results = await runTests(src, { sendRequest });
-  } catch (error) {
-    // create a result manually so that it can be displayed in the UI
-    results.stats.failures = 1;
-    results.stats.tests = 1;
-    results.tests.push(
-      {
-        currentRetry: 0,
-        duration: 0,
-        err: {
-          actual: undefined,
-          expected: undefined,
-          message: error.toString(),
-          multiple: [],
-          operator: undefined,
-          showDiff: false,
-          stack: '',
-        },
-        file: '',
-        fullTitle: unitTest.name,
-        id: '',
-        title: unitTest.name,
-      },
-    );
-  } finally {
     const testResult = await models.unitTestResult.create({
       results,
       parentId: unitTest.parentId,
     });
-    window.main.trackSegmentEvent({ event: SegmentEvent.unitTestRun });
+    window.main.trackSegmentEvent({ event: SegmentEvent.unitTestRun, properties: { organizationId, projectId } });
 
-    return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/test/test-suite/${testSuiteId}/test-result/${testResult._id}`);
+    return redirect(
+      `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/test/test-suite/${testSuiteId}/test-result/${testResult._id}`,
+    );
+  } catch (error) {
+    // create a result manually so that it can be displayed in the UI
+    results.stats.failures = 1;
+    results.stats.tests = 1;
+    results.tests.push({
+      currentRetry: 0,
+      duration: 0,
+      err: {
+        actual: undefined,
+        expected: undefined,
+        message: error.toString(),
+        multiple: [],
+        operator: undefined,
+        showDiff: false,
+        stack: '',
+      },
+      file: '',
+      fullTitle: unitTest.name,
+      id: '',
+      title: unitTest.name,
+    });
+    const testResult = await models.unitTestResult.create({
+      results,
+      parentId: unitTest.parentId,
+    });
+    window.main.trackSegmentEvent({ event: SegmentEvent.unitTestRun, properties: { organizationId, projectId } });
+
+    return redirect(
+      `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/test/test-suite/${testSuiteId}/test-result/${testResult._id}`,
+    );
   }
 };
 
 // Api Spec
-export const updateApiSpecAction: ActionFunction = async ({
-  request,
-  params,
-}) => {
+export const updateApiSpecAction: ActionFunction = async ({ request, params }) => {
   const { workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
   const formData = await request.formData();
@@ -825,29 +1158,30 @@ export const updateApiSpecAction: ActionFunction = async ({
   const apiSpec = await models.apiSpec.getByParentId(workspaceId);
 
   invariant(apiSpec, 'API Spec not found');
-  await database.update({
-    ...apiSpec,
-    modified: Date.now(),
-    created: fromSync ? Date.now() : apiSpec.created,
-    contents,
-  }, fromSync);
+  await database.update(
+    {
+      ...apiSpec,
+      modified: Date.now(),
+      created: fromSync ? Date.now() : apiSpec.created,
+      contents,
+    },
+    fromSync,
+  );
 
   return null;
 };
 
-export const generateCollectionFromApiSpecAction: ActionFunction = async ({
-  params,
-}) => {
+export const generateCollectionFromApiSpecAction: ActionFunction = async ({ params }) => {
   const { organizationId, projectId, workspaceId } = params;
 
   invariant(typeof projectId === 'string', 'Project ID is required');
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
 
-  const apiSpec = await models.apiSpec.getByParentId(workspaceId);
+  const project = await models.project.getById(projectId);
+  invariant(project, 'Project not found');
 
-  if (!apiSpec) {
-    throw new Error('No API Specification was found');
-  }
+  const apiSpec = await models.apiSpec.getByParentId(workspaceId);
+  invariant(apiSpec, 'No API Specification was found');
 
   const workspace = await models.workspace.getById(workspaceId);
 
@@ -856,22 +1190,29 @@ export const generateCollectionFromApiSpecAction: ActionFunction = async ({
   const workspaceMeta = await models.workspaceMeta.getOrCreateByParentId(workspaceId);
 
   const isLintError = (result: IRuleResult) => result.severity === 0;
+
+  const gitRepositoryId = isGitProject(project) ? project.gitRepositoryId : workspaceMeta?.gitRepositoryId;
+
   const rulesetPath = path.join(
     process.env['INSOMNIA_DATA_PATH'] || window.app.getPath('userData'),
-    `version-control/git/${workspaceMeta?.gitRepositoryId}/other/.spectral.yaml`,
+    `version-control/git/${gitRepositoryId}/other/.spectral.yaml`,
   );
 
   const spectralRunner = new SpectralRunner();
 
-  const results = (await spectralRunner.runDiagnostics({ contents: apiSpec.contents, rulesetPath })).filter(isLintError);
+  const results = (await spectralRunner.runDiagnostics({ contents: apiSpec.contents, rulesetPath })).filter(
+    isLintError,
+  );
   spectralRunner.terminate();
   if (apiSpec.contents && results && results.length) {
     throw new Error('Error Generating Configuration');
   }
 
-  await scanResources({
-    content: apiSpec.contents,
-  });
+  await scanResources([
+    {
+      contentStr: apiSpec.contents,
+    },
+  ]);
 
   await importResourcesToWorkspace({
     workspaceId,
@@ -905,28 +1246,38 @@ export const generateCollectionAndTestsAction: ActionFunction = async ({ params 
 
   const spectralRunner = new SpectralRunner();
 
-  const results = (await spectralRunner.runDiagnostics({ contents: apiSpec.contents, rulesetPath })).filter(isLintError);
+  const results = (await spectralRunner.runDiagnostics({ contents: apiSpec.contents, rulesetPath })).filter(
+    isLintError,
+  );
   spectralRunner.terminate();
   if (apiSpec.contents && results && results.length) {
     throw new Error('Error Generating Configuration');
   }
 
-  const resources = await scanResources({
-    content: apiSpec.contents,
-  });
+  const resources = await scanResources([
+    {
+      contentStr: apiSpec.contents,
+    },
+  ]);
+
+  const allRequestsFromResources = resources.reduce(
+    (accumulator, scanResult) => accumulator.concat(scanResult.requests ?? []),
+    [] as NonNullable<ScanResult['requests']>,
+  );
 
   const aiGeneratedRequestGroup = await models.requestGroup.create({
     name: 'AI Generated Requests',
     parentId: workspaceId,
   });
 
-  const requests = resources.requests?.filter(isRequest).map(request => {
-    return {
-      ...request,
-      _id: generateId(models.request.prefix),
-      parentId: aiGeneratedRequestGroup._id,
-    };
-  }) || [];
+  const requests =
+    allRequestsFromResources.filter(isRequest).map(request => {
+      return {
+        ...request,
+        _id: generateId(models.request.prefix),
+        parentId: aiGeneratedRequestGroup._id,
+      };
+    }) || [];
 
   await Promise.all(requests.map(request => models.request.create(request)));
 
@@ -1008,7 +1359,6 @@ export const generateCollectionAndTestsAction: ActionFunction = async ({ params 
           progress: ++progress,
           total,
         });
-
       } catch (err) {
         console.log(err);
         writer.write({
@@ -1135,10 +1485,7 @@ export const accessAIApiAction: ActionFunction = async ({ params }) => {
   }
 };
 
-export const createEnvironmentAction: ActionFunction = async ({
-  params,
-  request,
-}) => {
+export const createEnvironmentAction: ActionFunction = async ({ params, request }) => {
   const { workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
 
@@ -1178,9 +1525,7 @@ export const updateEnvironment: ActionFunction = async ({ request, params }) => 
   return updatedEnvironment;
 };
 
-export const deleteEnvironmentAction: ActionFunction = async ({
-  request, params,
-}) => {
+export const deleteEnvironmentAction: ActionFunction = async ({ request, params }) => {
   const { workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
 
@@ -1202,9 +1547,7 @@ export const deleteEnvironmentAction: ActionFunction = async ({
   return null;
 };
 
-export const duplicateEnvironmentAction: ActionFunction = async ({
-  request, params,
-}) => {
+export const duplicateEnvironmentAction: ActionFunction = async ({ request, params }) => {
   const { workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
 
@@ -1222,9 +1565,7 @@ export const duplicateEnvironmentAction: ActionFunction = async ({
   return newEnvironment;
 };
 
-export const setActiveEnvironmentAction: ActionFunction = async ({
-  request, params,
-}) => {
+export const setActiveEnvironmentAction: ActionFunction = async ({ request, params }) => {
   const { workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
 
@@ -1243,9 +1584,7 @@ export const setActiveEnvironmentAction: ActionFunction = async ({
   return null;
 };
 
-export const setActiveGlobalEnvironmentAction: ActionFunction = async ({
-  request, params,
-}) => {
+export const setActiveGlobalEnvironmentAction: ActionFunction = async ({ request, params }) => {
   const { workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
 
@@ -1264,9 +1603,7 @@ export const setActiveGlobalEnvironmentAction: ActionFunction = async ({
   return null;
 };
 
-export const updateCookieJarAction: ActionFunction = async ({
-  request, params,
-}) => {
+export const updateCookieJarAction: ActionFunction = async ({ request, params }) => {
   const { workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
 
@@ -1332,7 +1669,7 @@ export const deleteClientCertificateAction: ActionFunction = async ({ request })
 
 export const updateSettingsAction: ActionFunction = async ({ request }) => {
   const patch = await request.json();
-  if (patch.hasOwnProperty('enableAnalytics') && !patch.enableAnalytics) {
+  if ('enableAnalytics' in patch && !patch.enableAnalytics) {
     window.main.trackSegmentEvent({ event: SegmentEvent.analyticsDisabled });
   }
   await models.settings.patch(patch);
@@ -1353,7 +1690,7 @@ const getCollectionItem = async (id: string) => {
 };
 
 export const reorderCollectionAction: ActionFunction = async ({ request, params }) => {
-  const { workspaceId }  = params;
+  const { workspaceId } = params;
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
   const { id, targetId, dropPosition, metaSortKey } = await request.json();
   invariant(typeof id === 'string', 'ID is required');
@@ -1396,15 +1733,21 @@ export const createMockRouteAction: ActionFunction = async ({ request, params })
       parentId: projectId,
     });
     invariant(mockWorkspace, 'Workspace not found');
-    const newMockServer = await models.mockServer.getOrCreateForParentId(mockWorkspace._id, { name: collectionWorkspace.name });
+    const newMockServer = await models.mockServer.getOrCreateForParentId(mockWorkspace._id, {
+      name: collectionWorkspace.name,
+    });
     delete patch.mockServerName;
     const mockRoute = await models.mockRoute.create({ ...patch, parentId: newMockServer._id });
-    return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${newMockServer.parentId}/mock-server/mock-route/${mockRoute._id}`);
+    return redirect(
+      `/organization/${organizationId}/project/${projectId}/workspace/${newMockServer.parentId}/mock-server/mock-route/${mockRoute._id}`,
+    );
   }
   const mockServer = await models.mockServer.getById(patch.parentId);
   invariant(mockServer, 'Mock server not found');
   const mockRoute = await models.mockRoute.create(patch);
-  return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${mockServer.parentId}/mock-server/mock-route/${mockRoute._id}`);
+  return redirect(
+    `/organization/${organizationId}/project/${projectId}/workspace/${mockServer.parentId}/mock-server/mock-route/${mockRoute._id}`,
+  );
 };
 export const updateMockRouteAction: ActionFunction = async ({ request, params }) => {
   const { mockRouteId } = params;
@@ -1445,7 +1788,7 @@ export const toggleExpandAllRequestGroupsAction: ActionFunction = async ({ param
   invariant(typeof workspaceId === 'string', 'Workspace ID is required');
   const workspace = await models.workspace.getById(workspaceId);
   invariant(workspace, 'Workspace not found');
-  const data = await request.json() as {
+  const data = (await request.json()) as {
     toggle: 'collapse-all' | 'expand-all';
   };
   const isCollapsed = data.toggle === 'collapse-all';
@@ -1453,13 +1796,15 @@ export const toggleExpandAllRequestGroupsAction: ActionFunction = async ({ param
   const descendants = await database.withDescendants(workspace);
   const requestGroups = descendants.filter(isRequestGroup);
   const requestGroupMetas = descendants.filter(isRequestGroupMeta);
-  await Promise.all(requestGroups.map(requestGroup => {
-    const requestGroupMeta = requestGroupMetas.find(meta => meta.parentId === requestGroup._id);
+  await Promise.all(
+    requestGroups.map(requestGroup => {
+      const requestGroupMeta = requestGroupMetas.find(meta => meta.parentId === requestGroup._id);
 
-    if (requestGroupMeta) {
-      return models.requestGroupMeta.update(requestGroupMeta, { collapsed: isCollapsed });
-    }
-    return models.requestGroupMeta.create({ parentId: requestGroup._id, collapsed: isCollapsed });
-  }));
+      if (requestGroupMeta) {
+        return models.requestGroupMeta.update(requestGroupMeta, { collapsed: isCollapsed });
+      }
+      return models.requestGroupMeta.create({ parentId: requestGroup._id, collapsed: isCollapsed });
+    }),
+  );
   return null;
 };

@@ -1,4 +1,5 @@
 name: Release Start
+run-name: Deploy ${{ github.event.inputs.version}} to ${{ github.event.inputs.channel }} channel by @${{ github.actor }}
 
 on:
   workflow_dispatch:
@@ -8,9 +9,9 @@ on:
         type: choice
         description: Channel of the release (alpha/beta/stable)
         options:
-        - alpha
-        - beta
-        - stable
+          - alpha
+          - beta
+          - stable
       version:
         required: false
         description: force version of the release (e.g. 9.0.0) if previous release was successful, this should auto increment
@@ -18,7 +19,7 @@ on:
 jobs:
   setup-release-branch:
     timeout-minutes: 5
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout branch
         uses: actions/checkout@v4
@@ -30,7 +31,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version-file: ".nvmrc"
+          node-version-file: '.nvmrc'
           cache: 'npm'
           cache-dependency-path: package-lock.json
 
@@ -56,8 +57,7 @@ jobs:
         if: github.event.inputs.channel != 'stable' && github.event.inputs.version
         run: npm --workspaces version "${{ github.event.inputs.version }}"
 
-
-    # ############################################################
+      # ############################################################
 
       - name: Get version
         shell: bash
@@ -66,7 +66,7 @@ jobs:
           echo "RELEASE_BRANCH=release/$(node -e "console.log(require('./packages/insomnia/package.json').version)")" >> $GITHUB_ENV
 
       - name: Create Branch # Create a branch if it doesn't exist
-        uses: peterjgrainger/action-create-branch@v2.2.0
+        uses: peterjgrainger/action-create-branch@c2800a3a9edbba2218da6861fa46496cf8f3195a # v2.2.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -80,12 +80,12 @@ jobs:
 
       - name: Configure Git user
         id: configure_git_user
-        uses: Homebrew/actions/git-user-config@master
+        uses: Homebrew/actions/git-user-config@266845213695c3047d210b2e8fbc42ecdaf45802 # master
         with:
           username: ${{ (github.event_name == 'workflow_dispatch' && github.actor) || 'insomnia-infra' }}
 
-    # ############################################################
-    # re-run the versioning steps to apply to the new branch
+      # ############################################################
+      # re-run the versioning steps to apply to the new branch
 
       - name: (Re-run) App version (stable, patch latest stable)
         if: github.event.inputs.channel == 'stable' && !github.event.inputs.version
@@ -103,26 +103,24 @@ jobs:
         if: github.event.inputs.channel != 'stable' && github.event.inputs.version
         run: npm --workspaces version "${{ github.event.inputs.version }}"
 
-    # ############################################################
+      # ############################################################
 
       - name: Git Commit
         run: git commit -am "Bump app version to ${{ env.RELEASE_VERSION }}"
 
       - name: Git Push changes
         run: |
-          remote_repo="https://${GITHUB_ACTOR}:${RELEASE_GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          remote_repo="https://${GITHUB_ACTOR}:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push "${remote_repo}" --follow-tags
         env:
-          RELEASE_GH_TOKEN: ${{ secrets.RELEASE_GH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run the Action
-        uses: devops-infra/action-pull-request@v0.4.2
-        with:
-          github_token: ${{ secrets.RELEASE_GH_TOKEN }}
-          source_branch: ${{ env.RELEASE_BRANCH}}
-          target_branch: develop
-          title: ":rocket: ${{ env.RELEASE_VERSION}}"
-          body: |
-            **Automated pull request**
-            Artifacts build in progress...
-          draft: false
+      - name: Create Draft Release
+        run: |
+          gh release create core@${{ env.RELEASE_VERSION }} \
+          --title="${{ env.RELEASE_VERSION }} 📦" \
+          --target=${{ env.RELEASE_BRANCH }} \
+          --generate-notes \
+          --draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

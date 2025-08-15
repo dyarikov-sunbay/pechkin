@@ -3,7 +3,8 @@
  *
  * https://github.com/mochajs/mocha/blob/9d4a8ec2d22ee154aecb1f8eeb25af8e6309faa8/lib/reporters/json.js
  */
-import Mocha, { type MochaOptions, reporters, Runnable, Runner, Test } from 'mocha';
+import type { MochaOptions, Runnable, Runner, Test } from 'mocha';
+import Mocha, { reporters } from 'mocha';
 
 import type { TestResult, TestResults } from './entities';
 
@@ -81,7 +82,7 @@ const cleanCycles = (obj: Error) => {
   return JSON.parse(
     JSON.stringify(obj, (_, value) => {
       if (typeof value === 'object' && value !== null) {
-        if (cache.indexOf(value) !== -1) {
+        if (cache.includes(value)) {
           // Instead of going in a circle, we'll print [object Object]
           return '' + value;
         }

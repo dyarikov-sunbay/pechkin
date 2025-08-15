@@ -1,23 +1,44 @@
-import type { RequestContext } from 'insomnia-sdk';
 import porderedJSON from 'json-order';
 import React, { type FC, useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Checkbox, DropIndicator, GridList, GridListItem, type GridListItemProps, Heading, type Key, Tab, TabList, TabPanel, Tabs, Toolbar, TooltipTrigger, useDragAndDrop } from 'react-aria-components';
+import {
+  Button,
+  Checkbox,
+  DropIndicator,
+  GridList,
+  GridListItem,
+  Heading,
+  type Key,
+  Tab,
+  TabList,
+  TabPanel,
+  Tabs,
+  Toolbar,
+  TooltipTrigger,
+  useDragAndDrop,
+} from 'react-aria-components';
 import { Panel, PanelResizeHandle } from 'react-resizable-panels';
-import { type ActionFunction, type LoaderFunction, redirect, useNavigate, useParams, useRouteLoaderData, useSearchParams, useSubmit } from 'react-router-dom';
-import { useListData } from 'react-stately';
+import {
+  type ActionFunction,
+  type LoaderFunction,
+  useNavigate,
+  useParams,
+  useRouteLoaderData,
+  useSearchParams,
+  useSubmit,
+} from 'react-router';
 import { useInterval } from 'react-use';
 import { v4 as uuidv4 } from 'uuid';
 
+import { type RequestContext } from '../../../../insomnia-scripting-environment/src/objects';
 import { Tooltip } from '../../../src/ui/components/tooltip';
 import { JSON_ORDER_PREFIX, JSON_ORDER_SEPARATOR } from '../../common/constants';
 import type { ResponseTimelineEntry } from '../../main/network/libcurl-promise';
 import type { TimingStep } from '../../main/network/request-timing';
 import * as models from '../../models';
 import type { UserUploadEnvironment } from '../../models/environment';
-import { isRequest, type Request } from '../../models/request';
-import { isRequestGroup } from '../../models/request-group';
 import type { RunnerResultPerRequest, RunnerTestResult } from '../../models/runner-test-result';
 import { cancelRequestById } from '../../network/cancellation';
+import { moveAfter, moveBefore } from '../../utils';
 import { invariant } from '../../utils/invariant';
 import { SegmentEvent } from '../analytics';
 import { Dropdown, DropdownItem, ItemContent } from '../components/base/dropdown';
@@ -33,21 +54,28 @@ import { RunnerTestResultPane } from '../components/panes/runner-test-result-pan
 import { ResponseTimer } from '../components/response-timer';
 import { getTimeAndUnit } from '../components/tags/time-tag';
 import { ResponseTimelineViewer } from '../components/viewers/response-timeline-viewer';
+import { useRunnerContext } from '../context/app/runner-context';
+import { useRunnerRequestList } from '../hooks/use-runner-request-list';
 import type { OrganizationLoaderData } from './organization';
-import { type CollectionRunnerContext, type RunnerSource, sendActionImplementation } from './request';
+import {
+  type CollectionRunnerContext,
+  defaultSendActionRuntime,
+  type RunnerSource,
+  sendActionImplementation,
+} from './request';
 import { useRootLoaderData } from './root';
-import type { Child, WorkspaceLoaderData } from './workspace';
 
-const inputStyle = 'placeholder:italic py-0.5 mr-1.5 px-1 w-24 rounded-sm border-2 border-solid border-[--hl-sm] bg-[--color-bg] text-[--color-font] focus:outline-none focus:ring-1 focus:ring-[--hl-md] transition-colors';
-const iterationInputStyle = 'placeholder:italic py-0.5 mr-1.5 px-1 w-16 rounded-sm border-2 border-solid border-[--hl-sm] bg-[--color-bg] text-[--color-font] focus:outline-none focus:ring-1 focus:ring-[--hl-md] transition-colors';
+const inputStyle =
+  'placeholder:italic py-0.5 mr-1.5 px-1 w-24 rounded-sm border-2 border-solid border-[--hl-sm] bg-[--color-bg] text-[--color-font] focus:outline-none focus:ring-1 focus:ring-[--hl-md] transition-colors';
+const iterationInputStyle =
+  'placeholder:italic py-0.5 mr-1.5 px-1 w-16 rounded-sm border-2 border-solid border-[--hl-sm] bg-[--color-bg] text-[--color-font] focus:outline-none focus:ring-1 focus:ring-[--hl-md] transition-colors';
 
 // TODO: improve the performance for a lot of logs
 async function aggregateAllTimelines(errorMsg: string | null, testResult: RunnerTestResult) {
   let timelines = new Array<ResponseTimelineEntry>();
   const responsesInfo = testResult.responsesInfo;
 
-  for (let i = 0; i < responsesInfo.length; i++) {
-    const respInfo = responsesInfo[i];
+  for (const respInfo of responsesInfo) {
     const resp = await models.response.getById(respInfo.responseId);
 
     if (resp) {
@@ -101,57 +129,26 @@ export const repositionInArray = (allItems: string[], itemsToMove: string[], tar
   return items;
 };
 
-interface RequestRow {
+export interface RequestRow {
   id: string;
   name: string;
-  ancestorNames: string[];
+  ancestors: { id: string; name: string }[];
   method: string;
   url: string;
   parentId: string;
+}
+
+const defaultAdvancedConfig = {
+  bail: true,
+  keepLog: true,
 };
 
 export const Runner: FC<{}> = () => {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [shouldRefresh, setShouldRefresh] = useState(false);
+  const [searchParams] = useSearchParams();
   const [errorMsg, setErrorMsg] = useState<null | string>(null);
-  const [targetFolderId, setTargetFolderId] = useState<string | null>(null);
 
   const { currentPlan } = useRouteLoaderData('/organization') as OrganizationLoaderData;
-
-  if (searchParams.has('refresh-pane') || searchParams.has('error') || searchParams.has('folder')) {
-    if (searchParams.has('refresh-pane')) {
-      setShouldRefresh(true);
-      searchParams.delete('refresh-pane');
-    }
-
-    if (searchParams.has('error')) {
-      setErrorMsg(searchParams.get('error'));
-      // TODO: this should be removed when we are able categorized errors better and display them in different ways.
-      showAlert({
-        title: 'Unexpected Runner Failure',
-        message: (
-          <div>
-            <p>The runner failed due to an unhandled error:</p>
-            <code className="wide selectable">
-              <pre>{searchParams.get('error')}</pre>
-            </code>
-          </div>
-        ),
-      });
-      searchParams.delete('error');
-    } else {
-      setErrorMsg(null);
-    }
-
-    if (searchParams.has('folder')) {
-      setTargetFolderId(searchParams.get('folder'));
-      searchParams.delete('folder');
-    } else {
-      setTargetFolderId(null);
-    }
-
-    setSearchParams({});
-  }
+  const targetFolderId = searchParams.get('folder') || '';
 
   const { organizationId, projectId, workspaceId } = useParams() as {
     organizationId: string;
@@ -159,91 +156,66 @@ export const Runner: FC<{}> = () => {
     workspaceId: string;
     direction: 'vertical' | 'horizontal';
   };
-  const [iterationCount, setIterationCount] = useState<number>(1);
-  const [delay, setDelay] = useState<number>(0);
-  const [uploadData, setUploadData] = useState<UploadDataType[]>([]);
-  const [file, setFile] = useState<File | null>(null);
-  const [bail, setBail] = useState<boolean>(true);
   const [isRunning, setIsRunning] = useState(false);
 
-  invariant(iterationCount, 'iterationCount should not be null');
+  // For backward compatibility，the runnerId we use for testResult in database is no prefix with 'runner_'
+  const runnerId = targetFolderId ? targetFolderId : workspaceId;
 
   const { settings } = useRootLoaderData();
-  const { collection } = useRouteLoaderData(':workspaceId') as WorkspaceLoaderData;
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [showCLIModal, setShowCLIModal] = useState(false);
-  const [direction, setDirection] = useState<'horizontal' | 'vertical'>(settings.forceVerticalLayout ? 'vertical' : 'horizontal');
+  const [direction, setDirection] = useState<'horizontal' | 'vertical'>(
+    settings.forceVerticalLayout ? 'vertical' : 'horizontal',
+  );
+
+  const { runnerStateMap, updateRunnerState } = useRunnerContext();
+  const {
+    iterationCount = 1,
+    delay = 0,
+    selectedKeys = new Set<Key>(),
+    advancedConfig = defaultAdvancedConfig,
+    uploadData = [],
+    file,
+    filePath,
+  } = runnerStateMap?.[organizationId]?.[runnerId] || {};
+  invariant(iterationCount, 'iterationCount should not be null');
+
+  const { reqList, requestRows, entityMap } = useRunnerRequestList(organizationId, targetFolderId, runnerId);
+
   useEffect(() => {
     if (settings.forceVerticalLayout) {
       setDirection('vertical');
-      return () => { };
-    } else {
-      // Listen on media query changes
-      const mediaQuery = window.matchMedia('(max-width: 880px)');
-      setDirection(mediaQuery.matches ? 'vertical' : 'horizontal');
-
-      const handleChange = (e: MediaQueryListEvent) => {
-        setDirection(e.matches ? 'vertical' : 'horizontal');
-      };
-
-      mediaQuery.addEventListener('change', handleChange);
-
-      return () => {
-        mediaQuery.removeEventListener('change', handleChange);
-      };
+      return () => {};
     }
+    // Listen on media query changes
+    const mediaQuery = window.matchMedia('(max-width: 880px)');
+    setDirection(mediaQuery.matches ? 'vertical' : 'horizontal');
+
+    const handleChange = (e: MediaQueryListEvent) => {
+      setDirection(e.matches ? 'vertical' : 'horizontal');
+    };
+
+    mediaQuery.addEventListener('change', handleChange);
+
+    return () => {
+      mediaQuery.removeEventListener('change', handleChange);
+    };
   }, [settings.forceVerticalLayout, direction]);
 
-  const getEntityById = new Map<string, Child>();
-
-  const requestRows: RequestRow[] = collection
-    .filter(item => {
-      if (targetFolderId) {
-        return item.doc.parentId === targetFolderId;
-      }
+  const isConsistencyChanged = useMemo(() => {
+    if (requestRows.length !== reqList.length) {
       return true;
-    })
-    .filter(item => {
-      getEntityById.set(item.doc._id, item);
-      return isRequest(item.doc);
-    })
-    .map((item: Child) => {
-      const ancestorNames: string[] = [];
-      if (item.ancestors) {
-        item.ancestors.forEach(ancestorId => {
-          const ancestor = getEntityById.get(ancestorId);
-          if (ancestor && isRequestGroup(ancestor?.doc)) {
-            ancestorNames.push(ancestor?.doc.name);
-          }
-        });
-      }
-
-      const requestDoc = item.doc as Request;
-      invariant('method' in item.doc, 'Only Request is supported at the moment');
-      return {
-        id: item.doc._id,
-        name: item.doc.name,
-        ancestorNames,
-        method: requestDoc.method,
-        url: item.doc.url,
-        parentId: item.doc.parentId,
-      };
-    });
-
-  const reqList = useListData({
-    initialItems: requestRows,
-    filter: item => {
-      if (targetFolderId) {
-        return item.parentId === targetFolderId;
-      }
+    } else if (selectedKeys !== 'all' && Array.from(selectedKeys).length !== requestRows.length) {
       return true;
-    },
-  });
+    }
+
+    return requestRows.some((row: RequestRow, index: number) => row.id !== reqList[index].id);
+  }, [reqList, requestRows, selectedKeys]);
 
   const { dragAndDropHooks: requestsDnD } = useDragAndDrop({
     getItems: keys => {
       return [...keys].map(key => {
-        const name = getEntityById.get(key as string)?.doc.name || '';
+        const name = entityMap.get(key as string)?.doc.name || '';
         return {
           'text/plain': key.toString(),
           name,
@@ -251,22 +223,28 @@ export const Runner: FC<{}> = () => {
       });
     },
     onReorder: event => {
+      let newList = reqList;
       if (event.target.dropPosition === 'before') {
-        reqList.moveBefore(event.target.key, event.keys);
+        newList = moveBefore(reqList, event.target.key, event.keys);
       } else if (event.target.dropPosition === 'after') {
-        reqList.moveAfter(event.target.key, event.keys);
+        newList = moveAfter(reqList, event.target.key, event.keys);
       }
+      updateRunnerState(organizationId, runnerId, { reqList: newList });
     },
     renderDragPreview(items) {
       return (
-        <div className="bg-slate-800 px-2 py-0.5 rounded" >
-          <mark className="text-lg px-2 text-extrabold bg-green-400 rounded dark:bg-green-400" style={{ color: 'black' }}>{` ${items.length}`}</mark> item(s)
+        <div className="rounded bg-slate-800 px-2 py-0.5">
+          <mark
+            className="text-extrabold rounded bg-green-400 px-2 text-lg dark:bg-green-400"
+            style={{ color: 'black' }}
+          >{` ${items.length}`}</mark>{' '}
+          item(s)
         </div>
       );
     },
     renderDropIndicator(target) {
       if (target.type === 'item') {
-        const item = reqList.items.find(item => item.id === target.key);
+        const item = reqList.find(item => item.id === target.key);
         if (item) {
           return (
             <DropIndicator
@@ -289,11 +267,12 @@ export const Runner: FC<{}> = () => {
     }
     setIsRunning(true);
 
-    window.main.trackSegmentEvent({ event: SegmentEvent.collectionRunExecute, properties: { plan: currentPlan?.type || 'scratchpad', iterations: iterationCount } });
+    window.main.trackSegmentEvent({
+      event: SegmentEvent.collectionRunExecute,
+      properties: { plan: currentPlan?.type || 'scratchpad', iterations: iterationCount },
+    });
 
-    const selected = new Set(reqList.selectedKeys);
-    const requests = Array.from(reqList.items)
-      .filter(item => selected.has(item.id));
+    const requests = selectedKeys === 'all' ? reqList : reqList.filter(item => (selectedKeys as Set<Key>).has(item.id));
 
     // convert uploadData to environment data
     const userUploadEnvs = uploadData.map(data => {
@@ -313,47 +292,43 @@ export const Runner: FC<{}> = () => {
       iterationCount,
       userUploadEnvs,
       delay,
-      bail,
+      bail: advancedConfig?.bail,
+      keepLog: advancedConfig?.keepLog,
       targetFolderId: targetFolderId || '',
     };
-    submit(
-      JSON.stringify(actionInput),
-      {
-        method: 'post',
-        encType: 'application/json',
-        action: `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug/runner/run`,
-      }
-    );
+    submit(JSON.stringify(actionInput), {
+      method: 'post',
+      encType: 'application/json',
+      action: `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug/runner/run`,
+      navigate: false,
+    });
   };
 
   const navigate = useNavigate();
   const goToRequest = (requestId: string) => {
-    navigate(`/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug/request/${requestId}`);
+    navigate(
+      `/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug/request/${requestId}`,
+    );
   };
   const onToggleSelection = () => {
-    if (Array.from(reqList.selectedKeys).length === Array.from(reqList.items).length) {
+    if (selectedKeys === 'all' || Array.from(selectedKeys).length === Array.from(reqList).length) {
       // unselect all
-      reqList.setSelectedKeys(new Set([]));
+      updateRunnerState(organizationId, runnerId, { selectedKeys: new Set([]) });
     } else {
       // select all
-      reqList.setSelectedKeys(new Set(reqList.items.map(item => item.id)));
+      const allKeys = reqList.map(item => item.id);
+      updateRunnerState(organizationId, runnerId, { selectedKeys: new Set(allKeys) });
     }
   };
 
   const [testHistory, setTestHistory] = useState<RunnerTestResult[]>([]);
   useEffect(() => {
     const readResults = async () => {
-      const results = await models.runnerTestResult.findByParentId(workspaceId) || [];
+      const results = (await models.runnerTestResult.findByParentId(runnerId)) || [];
       setTestHistory(results.reverse());
     };
     readResults();
-  }, [workspaceId]);
-
-  useEffect(() => {
-    if (uploadData.length >= 1) {
-      setIterationCount(uploadData.length);
-    }
-  }, [setIterationCount, uploadData]);
+  }, [runnerId]);
 
   const [timingSteps, setTimingSteps] = useState<TimingStep[]>([]);
   const [totalTime, setTotalTime] = useState({
@@ -363,56 +338,90 @@ export const Runner: FC<{}> = () => {
 
   const [executionResult, setExecutionResult] = useState<RunnerTestResult | null>(null);
   const [timelines, setTimelines] = useState<ResponseTimelineEntry[]>([]);
-  const gotoExecutionResult = useCallback(async (executionId: string) => {
-    const result = await models.runnerTestResult.getById(executionId);
-    if (result) {
-      setExecutionResult(result);
-    }
-  }, [setExecutionResult]);
+  const gotoExecutionResult = useCallback(
+    async (executionId: string) => {
+      const result = await models.runnerTestResult.getById(executionId);
+      if (result) {
+        setExecutionResult(result);
+      }
+    },
+    [setExecutionResult],
+  );
 
   useEffect(() => {
     const refreshTimeline = async () => {
       if (executionResult) {
         const mergedTimelines = await aggregateAllTimelines(errorMsg, executionResult);
         setTimelines(mergedTimelines);
+      } else {
+        setTimelines([]);
       }
     };
     refreshTimeline();
   }, [executionResult, errorMsg]);
 
-  useInterval(() => {
-    const refreshPanes = async () => {
-      const latestTimingSteps = await window.main.getExecution({ requestId: workspaceId });
-      if (latestTimingSteps) {
-        // there is a timingStep item and it is not ended (duration is not assigned)
-        const isRunning = latestTimingSteps.length > 0 && latestTimingSteps[latestTimingSteps.length - 1].stepName !== 'Done';
-        setIsRunning(isRunning);
+  const showErrorAlert = (error: string) => {
+    showAlert({
+      title: 'Unexpected Runner Failure',
+      message: (
+        <div>
+          <p>The runner failed due to an unhandled error:</p>
+          <code className="wide selectable">
+            <pre>{error}</pre>
+          </code>
+        </div>
+      ),
+    });
+  };
 
-        if (isRunning) {
-          const duration = Date.now() - latestTimingSteps[latestTimingSteps.length - 1].startedAt;
-          const { number: durationNumber, unit: durationUnit } = getTimeAndUnit(duration);
+  const refreshPanes = useCallback(async () => {
+    const latestTimingSteps = await window.main.getExecution({ requestId: runnerId });
+    let isRunning = false;
+    if (latestTimingSteps) {
+      // there is a timingStep item and it is not ended (duration is not assigned)
+      isRunning = latestTimingSteps.length > 0 && latestTimingSteps[latestTimingSteps.length - 1].stepName !== 'Done';
+    }
+    setIsRunning(isRunning);
 
-          setTimingSteps(latestTimingSteps);
-          setTotalTime({
-            duration: durationNumber,
-            unit: durationUnit,
-          });
-        } else {
-          if (shouldRefresh) {
-            const results = await models.runnerTestResult.findByParentId(workspaceId) || [];
-            setTestHistory(results.reverse());
-            if (results.length > 0) {
-              const latestResult = results[0];
-              setExecutionResult(latestResult);
-            }
-            setShouldRefresh(false);
-          }
+    if (isRunning) {
+      const duration = Date.now() - latestTimingSteps[latestTimingSteps.length - 1].startedAt;
+      const { number: durationNumber, unit: durationUnit } = getTimeAndUnit(duration);
+      setTimingSteps(latestTimingSteps);
+      setTotalTime({
+        duration: durationNumber,
+        unit: durationUnit,
+      });
+    } else {
+      const results = (await models.runnerTestResult.findByParentId(runnerId)) || [];
+      // show execution result
+      if (results.length > 0) {
+        setTestHistory(results.reverse());
+        const latestResult = results[0];
+        setExecutionResult(latestResult);
+        const { error } = getExecution(runnerId);
+        if (error) {
+          setErrorMsg(error);
+          showErrorAlert(error);
+          updateExecution(runnerId, { error: '' });
         }
+      } else {
+        // show initial empty panel
+        setExecutionResult(null);
+        setErrorMsg(null);
       }
-    };
+    }
+  }, [runnerId]);
 
+  useInterval(
+    () => {
+      refreshPanes();
+    },
+    isRunning ? 1000 : null,
+  );
+
+  useEffect(() => {
     refreshPanes();
-  }, 1000);
+  }, [refreshPanes]);
 
   const { passedTestCount, totalTestCount, testResultCountTagColor } = useMemo(() => {
     let passedTestCount = 0;
@@ -420,10 +429,10 @@ export const Runner: FC<{}> = () => {
 
     if (!isRunning) {
       if (executionResult?.iterationResults) {
-        for (let i = 0; i < executionResult.iterationResults.length; i++) { // iterations
-          for (let j = 0; j < executionResult.iterationResults[i].length; j++) { // requests
-            for (let k = 0; k < executionResult.iterationResults[i][j].results.length; k++) { // test cases
-              if (executionResult.iterationResults[i][j].results[k].status === 'passed') {
+        for (const iteration of executionResult.iterationResults) {
+          for (const requests of iteration) {
+            for (const testCase of requests.results) {
+              if (testCase.status === 'passed') {
                 passedTestCount++;
               }
               totalTestCount++;
@@ -433,9 +442,8 @@ export const Runner: FC<{}> = () => {
       }
     }
 
-    const testResultCountTagColor = totalTestCount > 0 ?
-      passedTestCount === totalTestCount ? 'bg-lime-600' : 'bg-red-600' :
-      'bg-[var(--hl-sm)]';
+    const testResultCountTagColor =
+      totalTestCount > 0 ? (passedTestCount === totalTestCount ? 'bg-lime-600' : 'bg-red-600') : 'bg-[var(--hl-sm)]';
 
     return { passedTestCount, totalTestCount, testResultCountTagColor };
   }, [executionResult, isRunning]);
@@ -445,11 +453,11 @@ export const Runner: FC<{}> = () => {
     setSelectedTab('test-results');
   }, [setSelectedTab]);
 
-  const allKeys = reqList.items.map(item => item.id);
+  const allKeys = reqList.map(item => item.id);
   const disabledKeys = useMemo(() => {
     return isRunning ? allKeys : [];
   }, [isRunning, allKeys]);
-  const isDisabled = isRunning || Array.from(reqList.selectedKeys).length === 0;
+  const isDisabled = isRunning || Array.from(selectedKeys).length === 0;
 
   const [deletedItems, setDeletedItems] = useState<string[]>([]);
   const deleteHistoryItem = (item: RunnerTestResult) => {
@@ -457,29 +465,38 @@ export const Runner: FC<{}> = () => {
     setDeletedItems([...deletedItems, item._id]);
   };
 
+  const selectedRequestIdsForCliCommand =
+    targetFolderId !== null && targetFolderId !== ''
+      ? reqList
+          .filter(item => item.ancestors.map(a => a.id).includes(targetFolderId))
+          .map(item => item.id)
+          .filter(id => selectedKeys === 'all' || selectedKeys.has(id))
+      : reqList.map(item => item.id).filter(id => selectedKeys === 'all' || selectedKeys.has(id));
+
   return (
     <>
-      <Panel id="pane-one" className='pane-one theme--pane' minSize={35} maxSize={90}>
+      <Panel id="pane-one" className="pane-one theme--pane" minSize={35} maxSize={90}>
         <ErrorBoundary showAlert>
-
           <Pane type="request">
             <PaneHeader>
-              <Heading className="flex items-center w-full h-[--line-height-sm] pl-[--padding-md]">
-                <div className="w-full h-full text-left overflow-hidden">
+              <Heading className="flex h-[--line-height-sm] w-full items-center pl-[--padding-md]">
+                <div className="h-full w-full overflow-hidden text-left">
                   <div className="h-full min-w-[500px]">
                     <span className="mr-6 text-sm">
                       <input
                         value={iterationCount}
-                        name='Iterations'
+                        name="Iterations"
                         disabled={isRunning}
                         onChange={e => {
                           try {
                             if (parseInt(e.target.value, 10) > 0) {
-                              setIterationCount(parseInt(e.target.value, 10));
+                              updateRunnerState(organizationId, runnerId, {
+                                iterationCount: parseInt(e.target.value, 10),
+                              });
                             }
-                          } catch (ex) { }
+                          } catch (ex) {}
                         }}
-                        type='number'
+                        type="number"
                         className={iterationInputStyle}
                       />
                       <span className="border">Iterations</span>
@@ -488,33 +505,33 @@ export const Runner: FC<{}> = () => {
                       <input
                         value={delay}
                         disabled={isRunning}
-                        name='Delay'
+                        name="Delay"
                         onChange={e => {
                           try {
                             const delay = parseInt(e.target.value, 10);
                             if (delay >= 0) {
-                              setDelay(delay); // also update the temp settings
+                              updateRunnerState(organizationId, runnerId, { delay }); // also update the temp settings
                             }
-                          } catch (ex) { }
+                          } catch (ex) {}
                         }}
-                        type='number'
+                        type="number"
                         className={inputStyle}
                       />
                       <span className="mr-1 border">Delay (ms)</span>
                     </span>
                     <Button
                       onPress={() => setShowUploadModal(true)}
-                      className="py-0.5 px-1 border-[--hl-sm] h-full aria-pressed:bg-[--hl-sm] rounded-sm text-[--color-font] hover:bg-[--hl-xs] ring-1 ring-transparent transition-all text-sm mr-6"
+                      className="mr-6 h-full rounded-sm border-[--hl-sm] px-1 py-0.5 text-sm text-[--color-font] ring-1 ring-transparent transition-all hover:bg-[--hl-xs] aria-pressed:bg-[--hl-sm]"
                       isDisabled={isRunning}
                     >
                       <Icon icon={file ? 'eye' : 'upload'} /> {file ? 'View Data' : 'Upload Data'}
                     </Button>
                   </div>
                 </div>
-                <div className='flex p-1 self-stretch'>
+                <div className="flex self-stretch p-1">
                   <Button
                     isDisabled={isDisabled}
-                    className="px-5 ml-1 text-[--color-font-surprise] bg-[--color-surprise] hover:bg-opacity-90 focus:bg-opacity-90 rounded-l-sm"
+                    className="ml-1 rounded-l-sm bg-[--color-surprise] px-5 text-[--color-font-surprise] hover:bg-opacity-90 focus:bg-opacity-90"
                     onPress={onRun}
                   >
                     Run
@@ -528,7 +545,7 @@ export const Runner: FC<{}> = () => {
                     triggerButton={
                       <Button
                         isDisabled={isDisabled}
-                        className="px-1 bg-[--color-surprise] text-[--color-font-surprise] rounded-r-sm"
+                        className="rounded-r-sm bg-[--color-surprise] px-1 text-[--color-font-surprise]"
                         style={{
                           borderTopRightRadius: '0.125rem',
                           borderBottomRightRadius: '0.125rem',
@@ -538,153 +555,171 @@ export const Runner: FC<{}> = () => {
                       </Button>
                     }
                   >
-
                     <DropdownItem aria-label="send-now">
                       <ItemContent icon="arrow-circle-o-right" label="Run" onClick={onRun} />
                     </DropdownItem>
-                    <DropdownItem aria-label='Run via CLI'>
-                      <ItemContent
-                        icon="code"
-                        label="Run via CLI"
-                        onClick={() => setShowCLIModal(true)}
-                      />
+                    <DropdownItem aria-label="Run via CLI">
+                      <ItemContent icon="code" label="Run via CLI" onClick={() => setShowCLIModal(true)} />
                     </DropdownItem>
                   </Dropdown>
                 </div>
               </Heading>
             </PaneHeader>
-            <Tabs aria-label='Request group tabs' className="flex-1 w-full h-full flex flex-col">
-              <TabList className='w-full flex-shrink-0  overflow-x-auto border-solid scro border-b border-b-[--hl-md] bg-[--color-bg] flex items-center h-[--line-height-sm]' aria-label='Request pane tabs'>
+            <Tabs aria-label="Request group tabs" className="flex h-full w-full flex-1 flex-col">
+              <TabList
+                className="flex h-[--line-height-sm] w-full flex-shrink-0 items-center overflow-x-auto border-b border-solid border-b-[--hl-md] bg-[--color-bg]"
+                aria-label="Request pane tabs"
+              >
                 <Tab
-                  className='flex-shrink-0 h-full flex items-center justify-between cursor-pointer gap-2 outline-none select-none px-3 py-1 text-[--hl] aria-selected:text-[--color-font]  hover:bg-[--hl-sm] hover:text-[--color-font] aria-selected:bg-[--hl-xs] aria-selected:focus:bg-[--hl-sm] aria-selected:hover:bg-[--hl-sm] focus:bg-[--hl-sm] transition-colors duration-300'
-                  id='request-order'
+                  className="flex h-full flex-shrink-0 cursor-pointer select-none items-center justify-between gap-2 px-3 py-1 text-[--hl] outline-none transition-colors duration-300 hover:bg-[--hl-sm] hover:text-[--color-font] focus:bg-[--hl-sm] aria-selected:bg-[--hl-xs] aria-selected:text-[--color-font] aria-selected:hover:bg-[--hl-sm] aria-selected:focus:bg-[--hl-sm]"
+                  id="request-order"
                 >
-                  <i className="fa fa-sort fa-1x h-4 mr-2" />
+                  <i className="fa fa-sort fa-1x mr-2 h-4" />
                   Request Order
                 </Tab>
                 <Tab
-                  className='flex-shrink-0 h-full flex items-center justify-between cursor-pointer gap-2 outline-none select-none px-3 py-1 text-[--hl] aria-selected:text-[--color-font]  hover:bg-[--hl-sm] hover:text-[--color-font] aria-selected:bg-[--hl-xs] aria-selected:focus:bg-[--hl-sm] aria-selected:hover:bg-[--hl-sm] focus:bg-[--hl-sm] transition-colors duration-300'
-                  id='advanced'
+                  className="flex h-full flex-shrink-0 cursor-pointer select-none items-center justify-between gap-2 px-3 py-1 text-[--hl] outline-none transition-colors duration-300 hover:bg-[--hl-sm] hover:text-[--color-font] focus:bg-[--hl-sm] aria-selected:bg-[--hl-xs] aria-selected:text-[--color-font] aria-selected:hover:bg-[--hl-sm] aria-selected:focus:bg-[--hl-sm]"
+                  id="advanced"
                 >
-                  <i className="fa fa-gear fa-1x h-4 mr-2" />
+                  <i className="fa fa-gear fa-1x mr-2 h-4" />
                   Advanced
                 </Tab>
               </TabList>
-              <TabPanel className='w-full flex-1 flex flex-col overflow-hidden' id='request-order'>
-                <Toolbar className="w-full flex-shrink-0 h-[--line-height-sm] border-b border-solid border-[--hl-md] flex items-center px-2">
+              <TabPanel className="flex w-full flex-1 flex-col overflow-hidden" id="request-order">
+                <Toolbar className="flex h-[--line-height-sm] w-full flex-shrink-0 items-center border-b border-solid border-[--hl-md] px-2">
                   <span className="mr-2">
-                    {
-                      Array.from(reqList.selectedKeys).length === Array.from(reqList.items).length ?
-                        <span onClick={onToggleSelection}><i style={{ color: 'rgb(74 222 128)' }} className="fa fa-square-check fa-1x h-4 mr-2" /> <span className="cursor-pointer" >Unselect All</span></span> :
-                        Array.from(reqList.selectedKeys).length === 0 ?
-                          <span onClick={onToggleSelection}><i className="fa fa-square fa-1x h-4 mr-2" /> <span className="cursor-pointer" >Select All</span></span> :
-                          <span onClick={onToggleSelection}><i style={{ color: 'rgb(74 222 128)' }} className="fa fa-square-minus fa-1x h-4 mr-2" /> <span className="cursor-pointer" >Select All</span></span>
-                    }
+                    {selectedKeys === 'all' || Array.from(selectedKeys).length === Array.from(reqList).length ? (
+                      <span onClick={onToggleSelection}>
+                        <i style={{ color: 'rgb(74 222 128)' }} className="fa fa-square-check fa-1x mr-2 h-4" />{' '}
+                        <span className="cursor-pointer">Unselect All</span>
+                      </span>
+                    ) : Array.from(selectedKeys).length === 0 ? (
+                      <span onClick={onToggleSelection}>
+                        <i className="fa fa-square fa-1x mr-2 h-4" /> <span className="cursor-pointer">Select All</span>
+                      </span>
+                    ) : (
+                      <span onClick={onToggleSelection}>
+                        <i style={{ color: 'rgb(74 222 128)' }} className="fa fa-square-minus fa-1x mr-2 h-4" />{' '}
+                        <span className="cursor-pointer">Select All</span>
+                      </span>
+                    )}
                   </span>
                 </Toolbar>
-                <PaneBody placeholder className='p-0'>
+                <PaneBody placeholder className="p-0">
                   <GridList
                     id="runner-request-list"
-                    items={reqList.items}
+                    items={reqList}
                     selectionMode="multiple"
-                    selectedKeys={reqList.selectedKeys}
-                    onSelectionChange={reqList.setSelectedKeys}
-                    defaultSelectedKeys={allKeys}
+                    selectedKeys={selectedKeys}
+                    onSelectionChange={keys => {
+                      updateRunnerState(organizationId, runnerId, { selectedKeys: keys });
+                    }}
                     aria-label="Request Collection"
                     dragAndDropHooks={requestsDnD}
-                    className="w-full h-full leading-8 text-base overflow-auto"
+                    className="h-full w-full overflow-auto text-base leading-8"
                     disabledKeys={disabledKeys}
                   >
                     {item => {
-                      const parentFolders = item.ancestorNames.map((parentFolderName: string, i: number) => {
-                        // eslint-disable-next-line react/no-array-index-key
-                        return <TooltipTrigger key={`parent-folder-${i}=${parentFolderName}`} >
-                          <Tooltip message={parentFolderName}>
-                            <i className="fa fa-folder fa-1x h-4 mr-0.3 text-[--color-font]" />
-                            <i className="fa fa-caret-right fa-1x h-4 mr-0.3 text-[--color-font]-50  opacity-50" />
-                          </Tooltip>
-                        </TooltipTrigger>;
+                      const parentFolders = item.ancestors.map(({ id, name }) => {
+                        return (
+                          <TooltipTrigger key={`parent-folder-${id}=${name}`}>
+                            <Tooltip message={name}>
+                              <i className="fa fa-folder fa-1x mr-0.3 h-4 text-[--color-font]" />
+                              <i className="fa fa-caret-right fa-1x mr-0.3 text-[--color-font]-50 h-4 opacity-50" />
+                            </Tooltip>
+                          </TooltipTrigger>
+                        );
                       });
-                      const parentFolderContainer = parentFolders.length > 0 ? <span className="ml-2">{parentFolders}</span> : null;
+                      const parentFolderContainer =
+                        parentFolders.length > 0 ? <span className="ml-2">{parentFolders}</span> : null;
 
                       return (
-                        <RequestItem textValue={item.name} className={`runner-request-list-${item.name} text-[--color-font] border border-solid border-transparent`} style={{ 'outline': 'none' }}>
+                        <GridListItem
+                          textValue={item.name}
+                          className={`runner-request-list-${item.name} border border-solid border-transparent text-[--color-font]`}
+                          style={{ outline: 'none' }}
+                        >
+                          <Button slot="drag" className="hover:cursor-grab">
+                            <Icon icon="grip-vertical" className="mr-2 w-2 text-[--hl]" />
+                          </Button>
+                          <Checkbox slot="selection">
+                            {({ isSelected }) => (
+                              <>
+                                {isSelected ? (
+                                  <i
+                                    className="fa fa-square-check fa-1x mr-2 h-4"
+                                    style={{ color: 'rgb(74 222 128)' }}
+                                  />
+                                ) : (
+                                  <i className="fa fa-square fa-1x mr-2 h-4" />
+                                )}
+                              </>
+                            )}
+                          </Checkbox>
                           {parentFolderContainer}
-                          <span className={`ml-2 uppercase text-xs http-method-${item.method}`}>{item.method}</span>
-                          <span className="ml-2 hover:underline cursor-pointer text-[--hl]" onClick={() => goToRequest(item.id)}>{item.name}</span>
-                        </RequestItem>
+                          <span className={`ml-2 text-xs uppercase http-method-${item.method}`}>{item.method}</span>
+                          <span
+                            className="ml-2 cursor-pointer text-[--hl] hover:underline"
+                            onClick={() => goToRequest(item.id)}
+                          >
+                            {item.name}
+                          </span>
+                        </GridListItem>
                       );
                     }}
                   </GridList>
                 </PaneBody>
               </TabPanel>
-              <TabPanel className='w-full flex-1 flex align-center overflow-y-auto' id='advanced'>
-                <div className="p-4 w-full">
+              <TabPanel className="align-center flex w-full flex-1 overflow-y-auto" id="advanced">
+                <div className="w-full p-4">
                   <div>
                     <label className="flex items-center gap-2">
-                      <input
-                        name='persist-response'
-                        onChange={() => { }}
-                        type="checkbox"
-                        disabled={true}
-                      />
+                      <input name="persist-response" onChange={() => {}} type="checkbox" disabled={true} />
                       Persist responses for a session
-                      <HelpTooltip className="space-left">Enabling this will impact performance while responses are saved for other purposes.</HelpTooltip>
+                      <HelpTooltip className="space-left">
+                        Enabling this will impact performance while responses are saved for other purposes.
+                      </HelpTooltip>
                     </label>
                   </div>
                   <div>
                     <label className="flex items-center gap-2">
                       <input
-                        name='log-off'
-                        onChange={() => { }}
-                        type="checkbox"
-                        disabled={true}
-                      />
-                      Turn off logs during run
-                      <HelpTooltip className="space-left">Disabling this will improve the performance while logs are not saved.</HelpTooltip>
-                    </label>
-                  </div>
-                  <div>
-                    <label className="flex items-center gap-2">
-                      <input
-                        name='bail'
-                        onChange={() => setBail(!bail)}
+                        name="enable-log"
+                        onChange={() => {
+                          updateRunnerState(organizationId, runnerId, {
+                            advancedConfig: {
+                              ...advancedConfig,
+                              keepLog: !advancedConfig?.keepLog,
+                            },
+                          });
+                        }}
                         type="checkbox"
                         disabled={isRunning}
-                        checked={bail}
+                        checked={advancedConfig?.keepLog}
+                      />
+                      Keep logs after run
+                      <HelpTooltip className="space-left">
+                        Disabling this will improve the performance while logs are not saved.
+                      </HelpTooltip>
+                    </label>
+                  </div>
+                  <div>
+                    <label className="flex items-center gap-2">
+                      <input
+                        name="bail"
+                        onChange={() => {
+                          updateRunnerState(organizationId, runnerId, {
+                            advancedConfig: {
+                              ...advancedConfig,
+                              bail: !advancedConfig?.bail,
+                            },
+                          });
+                        }}
+                        type="checkbox"
+                        disabled={isRunning}
+                        checked={advancedConfig?.bail}
                       />
                       Stop run if an error occurs
-                    </label>
-                  </div>
-                  <div>
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        disabled={true}
-                        checked
-                      />
-                      Keep variable values
-                      <HelpTooltip className="space-left">Enabling this will persist generated values.</HelpTooltip>
-                    </label>
-                  </div>
-                  <div>
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        disabled={true}
-                      />
-                      Run collection without using stored cookies
-                    </label>
-                  </div>
-                  <div>
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        disabled={true}
-                        checked
-                      />
-                      Save cookies after collection run
-                      <HelpTooltip className="space-left">Cookies in the running will be saved to the cookie manager.</HelpTooltip>
                     </label>
                   </div>
                 </div>
@@ -693,19 +728,25 @@ export const Runner: FC<{}> = () => {
             {showCLIModal && (
               <CLIPreviewModal
                 onClose={() => setShowCLIModal(false)}
-                requestIds={Array.from(reqList.items).map(item => item.id).filter(id => new Set(reqList.selectedKeys).has(id))}
-                allSelected={Array.from(reqList.selectedKeys).length === Array.from(reqList.items).length}
+                requestIds={selectedRequestIdsForCliCommand}
+                targetFolderId={targetFolderId}
+                keepManualOrder={!isConsistencyChanged}
                 iterationCount={iterationCount}
                 delay={delay}
-                filePath={file?.path || ''}
-                bail={bail}
+                filePath={filePath || ''}
+                bail={advancedConfig?.bail}
               />
             )}
             {showUploadModal && (
               <UploadDataModal
                 onUploadFile={(file, uploadData) => {
-                  setFile(file);
-                  setUploadData(uploadData); // also update the temp settings
+                  const filePath = file ? window.webUtils.getPathForFile(file) : '';
+                  updateRunnerState(organizationId, runnerId, {
+                    uploadData,
+                    file,
+                    filePath,
+                    iterationCount: uploadData.length >= 1 ? uploadData.length : iterationCount,
+                  });
                 }}
                 userUploadData={uploadData}
                 onClose={() => setShowUploadModal(false)}
@@ -714,31 +755,39 @@ export const Runner: FC<{}> = () => {
           </Pane>
         </ErrorBoundary>
       </Panel>
-      <PanelResizeHandle className={direction === 'horizontal' ? 'h-full w-[1px] bg-[--hl-md]' : 'w-full h-[1px] bg-[--hl-md]'} />
-      <Panel id="pane-two" className='pane-two theme--pane'>
+      <PanelResizeHandle
+        className={direction === 'horizontal' ? 'h-full w-[1px] bg-[--hl-md]' : 'h-[1px] w-full bg-[--hl-md]'}
+      />
+      <Panel id="pane-two" className="pane-two theme--pane">
         <PaneHeader className="row-spaced">
-          <Heading className="flex items-center w-full h-[--line-height-sm] pl-3 border-solid scro border-b border-b-[--hl-md]">
-            {
-              executionResult?.duration ?
-                <div className="bg-info tag" >
-                  <strong>{`${totalTime.duration} ${totalTime.unit}`}</strong>
-                </div> :
-                <span className="font-bold">Collection Runner</span>
-            }
+          <Heading className="flex h-[--line-height-sm] w-full items-center border-b border-solid border-b-[--hl-md] pl-3">
+            {executionResult?.duration ? (
+              <div className="bg-info tag">
+                <strong>{`${totalTime.duration} ${totalTime.unit}`}</strong>
+              </div>
+            ) : (
+              <span className="font-bold">Collection Runner</span>
+            )}
           </Heading>
         </PaneHeader>
-        <Tabs selectedKey={selectedTab} onSelectionChange={setSelectedTab} aria-label='Request group tabs' className="flex-1 w-full h-full flex flex-col">
-          <TabList className='w-full flex-shrink-0  overflow-x-auto border-solid scro border-b border-b-[--hl-md] bg-[--color-bg] flex items-center h-[--line-height-sm]' aria-label='Request pane tabs'>
+        <Tabs
+          selectedKey={selectedTab}
+          onSelectionChange={setSelectedTab}
+          aria-label="Request group tabs"
+          className="flex h-full w-full flex-1 flex-col"
+        >
+          <TabList
+            className="flex h-[--line-height-sm] w-full flex-shrink-0 items-center overflow-x-auto border-b border-solid border-b-[--hl-md] bg-[--color-bg]"
+            aria-label="Request pane tabs"
+          >
             <Tab
-              className='flex-shrink-0 h-full flex items-center justify-between cursor-pointer gap-2 outline-none select-none px-3 py-1 text-[--hl] aria-selected:text-[--color-font]  hover:bg-[--hl-sm] hover:text-[--color-font] aria-selected:bg-[--hl-xs] aria-selected:focus:bg-[--hl-sm] aria-selected:hover:bg-[--hl-sm] focus:bg-[--hl-sm] transition-colors duration-300'
-              id='test-results'
+              className="flex h-full flex-shrink-0 cursor-pointer select-none items-center justify-between gap-2 px-3 py-1 text-[--hl] outline-none transition-colors duration-300 hover:bg-[--hl-sm] hover:text-[--color-font] focus:bg-[--hl-sm] aria-selected:bg-[--hl-xs] aria-selected:text-[--color-font] aria-selected:hover:bg-[--hl-sm] aria-selected:focus:bg-[--hl-sm]"
+              id="test-results"
             >
               <div>
-                <span>
-                  Tests
-                </span>
+                <span>Tests</span>
                 <span
-                  className={`test-result-count rounded-sm ml-1 px-1 ${testResultCountTagColor}`}
+                  className={`test-result-count ml-1 rounded-sm px-1 ${testResultCountTagColor}`}
                   style={{ color: 'white' }}
                 >
                   {`${passedTestCount} / ${totalTestCount}`}
@@ -746,25 +795,22 @@ export const Runner: FC<{}> = () => {
               </div>
             </Tab>
             <Tab
-              className='flex-shrink-0 h-full flex items-center justify-between cursor-pointer gap-2 outline-none select-none px-3 py-1 text-[--hl] aria-selected:text-[--color-font]  hover:bg-[--hl-sm] hover:text-[--color-font] aria-selected:bg-[--hl-xs] aria-selected:focus:bg-[--hl-sm] aria-selected:hover:bg-[--hl-sm] focus:bg-[--hl-sm] transition-colors duration-300'
-              id='history'
+              className="flex h-full flex-shrink-0 cursor-pointer select-none items-center justify-between gap-2 px-3 py-1 text-[--hl] outline-none transition-colors duration-300 hover:bg-[--hl-sm] hover:text-[--color-font] focus:bg-[--hl-sm] aria-selected:bg-[--hl-xs] aria-selected:text-[--color-font] aria-selected:hover:bg-[--hl-sm] aria-selected:focus:bg-[--hl-sm]"
+              id="history"
             >
               History
             </Tab>
             <Tab
-              className='flex-shrink-0 h-full flex items-center justify-between cursor-pointer gap-2 outline-none select-none px-3 py-1 text-[--hl] aria-selected:text-[--color-font]  hover:bg-[--hl-sm] hover:text-[--color-font] aria-selected:bg-[--hl-xs] aria-selected:focus:bg-[--hl-sm] aria-selected:hover:bg-[--hl-sm] focus:bg-[--hl-sm] transition-colors duration-300'
-              id='console'
+              className="flex h-full flex-shrink-0 cursor-pointer select-none items-center justify-between gap-2 px-3 py-1 text-[--hl] outline-none transition-colors duration-300 hover:bg-[--hl-sm] hover:text-[--color-font] focus:bg-[--hl-sm] aria-selected:bg-[--hl-xs] aria-selected:text-[--color-font] aria-selected:hover:bg-[--hl-sm] aria-selected:focus:bg-[--hl-sm]"
+              id="console"
             >
               Console
             </Tab>
           </TabList>
-          <TabPanel className='w-full flex-1 flex flex-col overflow-hidden' id='console'>
-            <ResponseTimelineViewer
-              key={workspaceId}
-              timeline={timelines}
-            />
+          <TabPanel className="flex w-full flex-1 flex-col overflow-hidden" id="console">
+            <ResponseTimelineViewer key={runnerId} timeline={timelines} />
           </TabPanel>
-          <TabPanel className='w-full flex-1 flex flex-col overflow-hidden' id='history'>
+          <TabPanel className="flex w-full flex-1 flex-col overflow-hidden" id="history">
             <RunnerResultHistoryPane
               history={testHistory.filter(item => !deletedItems.includes(item._id))}
               gotoExecutionResult={gotoExecutionResult}
@@ -772,23 +818,23 @@ export const Runner: FC<{}> = () => {
               deleteHistoryItem={deleteHistoryItem}
             />
           </TabPanel>
-          <TabPanel
-            className='w-full flex-1 flex flex-col overflow-y-auto'
-            id='test-results'
-          >
-            {isRunning &&
-              <div className="h-full w-full text-md flex items-center">
+          <TabPanel className="flex w-full flex-1 flex-col overflow-y-auto" id="test-results">
+            {isRunning && (
+              <div className="text-md flex h-full w-full items-center">
                 <ResponseTimer
-                  handleCancel={() => cancelExecution(workspaceId)}
-                  activeRequestId={workspaceId}
+                  handleCancel={() => cancelExecution(runnerId)}
+                  activeRequestId={runnerId}
                   steps={timingSteps}
                 />
               </div>
-            }
-            {!isRunning && <ErrorBoundary showAlert><RunnerTestResultPane result={executionResult} /></ErrorBoundary>}
+            )}
+            {!isRunning && (
+              <ErrorBoundary showAlert>
+                <RunnerTestResultPane result={executionResult} />
+              </ErrorBoundary>
+            )}
           </TabPanel>
         </Tabs>
-
       </Panel>
     </>
   );
@@ -796,71 +842,49 @@ export const Runner: FC<{}> = () => {
 
 export default Runner;
 
-const RequestItem = (
-  { children, ...props }: GridListItemProps
-) => {
-
-  return (
-    <GridListItem {...props}>
-      {() => (
-        <>
-          <Button slot="drag" className="hover:cursor-grab">
-            <Icon icon="grip-vertical" className='w-2 text-[--hl] mr-2' />
-          </Button>
-          <Checkbox slot="selection">
-            {({ isSelected }) => {
-              return <>
-                {isSelected ?
-                  <i className="fa fa-square-check fa-1x h-4 mr-2" style={{ color: 'rgb(74 222 128)' }} /> :
-                  <i className="fa fa-square fa-1x h-4 mr-2" />
-                }
-              </>;
-            }}
-          </Checkbox>
-          {children}
-        </>
-      )}
-    </GridListItem>
-  );
-};
-
 // This is required for tracking the active request for one runner execution
 // Then in runner cancellation, both the active request and the runner execution will be canceled
 // TODO(george): Potentially it could be merged with maps in request-timing.ts and cancellation.ts
-const runnerExecutions = new Map<string, string>();
+interface ExecutionInfo {
+  activeRequestId?: string;
+  error?: string;
+}
+const runnerExecutions = new Map<string, ExecutionInfo>();
 function startExecution(workspaceId: string) {
-  runnerExecutions.set(workspaceId, '');
+  runnerExecutions.set(workspaceId, {});
 }
 
-function stopExecution(workspaceId: string) {
-  runnerExecutions.delete(workspaceId);
-}
-
-function updateExecution(workspaceId: string, requestId: string) {
-  runnerExecutions.set(workspaceId, requestId);
+function updateExecution(workspaceId: string, executionInfo: ExecutionInfo) {
+  const info = runnerExecutions.get(workspaceId);
+  runnerExecutions.set(workspaceId, {
+    ...info,
+    ...executionInfo,
+  });
 }
 
 function getExecution(workspaceId: string) {
-  return runnerExecutions.get(workspaceId);
+  return runnerExecutions.get(workspaceId) || {};
 }
 
 function cancelExecution(workspaceId: string) {
-  const activeRequestId = getExecution(workspaceId);
+  const { activeRequestId } = getExecution(workspaceId);
   if (activeRequestId) {
     cancelRequestById(activeRequestId);
     window.main.completeExecutionStep({ requestId: activeRequestId });
     window.main.updateLatestStepName({ requestId: workspaceId, stepName: 'Done' });
     window.main.completeExecutionStep({ requestId: workspaceId });
-    stopExecution(workspaceId);
   }
 }
-const wrapAroundIterationOverIterationData = (list?: UserUploadEnvironment[], currentIteration?: number): UserUploadEnvironment | undefined => {
+const wrapAroundIterationOverIterationData = (
+  list?: UserUploadEnvironment[],
+  currentIteration?: number,
+): UserUploadEnvironment | undefined => {
   if (currentIteration === undefined || !Array.isArray(list) || list.length === 0) {
     return undefined;
   }
   if (list.length >= currentIteration + 1) {
     return list[currentIteration];
-  };
+  }
   return list[(currentIteration + 1) % list.length];
 };
 export interface runCollectionActionParams {
@@ -869,6 +893,7 @@ export interface runCollectionActionParams {
   delay: number;
   userUploadEnvs: UserUploadEnvironment[];
   bail: boolean;
+  keepLog: boolean;
   targetFolderId: string;
 }
 
@@ -879,8 +904,10 @@ export const runCollectionAction: ActionFunction = async ({ request, params }) =
   invariant(projectId, 'Project id is required');
   invariant(workspaceId, 'Workspace id is required');
 
-  const { requests, iterationCount, delay, userUploadEnvs, bail, targetFolderId } = await request.json() as runCollectionActionParams;
+  const { requests, iterationCount, delay, userUploadEnvs, bail, targetFolderId, keepLog } =
+    (await request.json()) as runCollectionActionParams;
   const source: RunnerSource = 'runner';
+  const runnerId = targetFolderId ? targetFolderId : workspaceId;
 
   let testCtx: CollectionRunnerContext = {
     source,
@@ -905,14 +932,20 @@ export const runCollectionAction: ActionFunction = async ({ request, params }) =
     },
   };
 
-  window.main.startExecution({ requestId: workspaceId });
+  window.main.startExecution({ requestId: runnerId });
   window.main.addExecutionStep({
-    requestId: workspaceId,
+    requestId: runnerId,
     stepName: 'Initializing',
   });
-  startExecution(workspaceId);
+  startExecution(runnerId);
+
+  const noLogRuntime = {
+    appendTimeline: async (_timelinePath: string, _logs: string[]) => {}, // no op
+  };
 
   try {
+    const runtime = keepLog ? defaultSendActionRuntime : noLogRuntime;
+
     for (let i = 0; i < iterationCount; i++) {
       // nextRequestIdOrName is used to manual set next request in iteration from pre-request script
       let nextRequestIdOrName = '';
@@ -922,7 +955,7 @@ export const runCollectionAction: ActionFunction = async ({ request, params }) =
       let j = 0;
       while (j < requests.length) {
         // TODO: we might find a better way to do runner cancellation
-        if (getExecution(workspaceId) === undefined) {
+        if (getExecution(runnerId) === undefined) {
           throw 'Runner has been stopped';
         }
 
@@ -957,21 +990,22 @@ export const runCollectionAction: ActionFunction = async ({ request, params }) =
             }
           }
 
-          updateExecution(workspaceId, targetRequest.id);
+          updateExecution(runnerId, {
+            activeRequestId: targetRequest.id,
+          });
           window.main.updateLatestStepName({
-            requestId: workspaceId,
+            requestId: runnerId,
             stepName: `Iteration ${i + 1} - Executing ${j + 1} of ${requests.length} requests - "${targetRequest.name}"`,
           });
 
-          const activeRequestMeta = await models.requestMeta.updateOrCreateByParentId(
-            targetRequest.id,
-            { lastActive: Date.now() },
-          );
+          const activeRequestMeta = await models.requestMeta.updateOrCreateByParentId(targetRequest.id, {
+            lastActive: Date.now(),
+          });
           invariant(activeRequestMeta, 'Request meta not found');
 
           await new Promise(resolve => setTimeout(resolve, delay));
 
-          const mutatedContext = await sendActionImplementation({
+          const mutatedContext = (await sendActionImplementation({
             requestId: targetRequest.id,
             iteration: i + 1,
             iterationCount,
@@ -979,11 +1013,12 @@ export const runCollectionAction: ActionFunction = async ({ request, params }) =
             shouldPromptForPathAfterResponse: false,
             ignoreUndefinedEnvVariable: true,
             testResultCollector: resultCollector,
+            runtime,
             transientVariables: testCtx.transientVariables,
-          }) as RequestContext | null;
+          })) as RequestContext | null;
           if (mutatedContext?.execution?.nextRequestIdOrName) {
             nextRequestIdOrName = mutatedContext.execution.nextRequestIdOrName || '';
-          };
+          }
 
           const requestResults: RunnerResultPerRequest = {
             requestName: targetRequest.name,
@@ -1005,7 +1040,6 @@ export const runCollectionAction: ActionFunction = async ({ request, params }) =
               },
             ],
           };
-
         } catch (e) {
           const requestResults: RunnerResultPerRequest = {
             requestName: targetRequest.name,
@@ -1052,17 +1086,20 @@ export const runCollectionAction: ActionFunction = async ({ request, params }) =
       };
     }
 
-    window.main.updateLatestStepName({ requestId: workspaceId, stepName: 'Done' });
-    window.main.completeExecutionStep({ requestId: workspaceId });
+    window.main.updateLatestStepName({ requestId: runnerId, stepName: 'Done' });
+    window.main.completeExecutionStep({ requestId: runnerId });
   } catch (e) {
     // the error could be from third party
-    const errMsg = encodeURIComponent(e.error || e);
-    return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug/runner?refresh-pane&error=${errMsg}&folder=${targetFolderId}`);
+    const errMsg = e.error || e;
+    updateExecution(runnerId, {
+      error: errMsg,
+    });
+    return null;
   } finally {
-    cancelExecution(workspaceId);
+    cancelExecution(runnerId);
 
     await models.runnerTestResult.create({
-      parentId: workspaceId,
+      parentId: runnerId,
       source: testCtx.source,
       iterations: testCtx.iterationCount,
       duration: testCtx.duration,
@@ -1071,8 +1108,7 @@ export const runCollectionAction: ActionFunction = async ({ request, params }) =
       responsesInfo: testCtx.responsesInfo,
     });
   }
-
-  return redirect(`/organization/${organizationId}/project/${projectId}/workspace/${workspaceId}/debug/runner?refresh-pane&folder=${targetFolderId}`);
+  return null;
 };
 
 export const collectionRunnerStatusLoader: LoaderFunction = async ({ params }) => {

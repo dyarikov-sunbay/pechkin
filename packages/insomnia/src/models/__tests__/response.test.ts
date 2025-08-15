@@ -1,20 +1,20 @@
-import fs from 'fs';
-import { tmpdir } from 'os';
-import path from 'path';
+import fs from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import zlib from 'node:zlib';
+
 import { describe, expect, it } from 'vitest';
-import zlib from 'zlib';
 
 import * as models from '../../models';
 
 describe('migrate()', () => {
-
   it('does it', async () => {
     const bodyPath = path.join(tmpdir(), 'foo.zip');
     fs.writeFileSync(bodyPath, zlib.gzipSync('Hello World!'));
     const response = await models.initModel(models.response.type, {
       bodyPath,
     });
-    const body = await models.response.getBodyBuffer(response).toString();
+    const body = (await models.response.getBodyBuffer(response)).toString();
     expect(response.bodyCompression).toBe('zip');
     expect(body).toBe('Hello World!');
   });

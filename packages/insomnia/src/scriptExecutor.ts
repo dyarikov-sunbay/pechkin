@@ -1,17 +1,28 @@
 import { appendFile } from 'node:fs/promises';
 
-import { initInsomniaObject, InsomniaObject } from 'insomnia-sdk';
-import { Console, mergeClientCertificates, mergeCookieJar, mergeRequests, mergeSettings, type RequestContext } from 'insomnia-sdk';
 import * as _ from 'lodash';
 
+import { initInsomniaObject, InsomniaObject } from '../../insomnia-scripting-environment/src/objects';
+import {
+  getNewConsole,
+  mergeClientCertificates,
+  mergeCookieJar,
+  mergeRequests,
+  mergeSettings,
+  type RequestContext,
+} from '../../insomnia-scripting-environment/src/objects';
 import { invariant } from '../src/utils/invariant';
 import { requireInterceptor } from './requireInterceptor';
 
-export const runScript = async (
-  { script, context }: { script: string; context: RequestContext },
-): Promise<RequestContext> => {
+export const runScript = async ({
+  script,
+  context,
+}: {
+  script: string;
+  context: RequestContext;
+}): Promise<RequestContext> => {
   // console.log(script);
-  const scriptConsole = new Console();
+  const scriptConsole = getNewConsole();
 
   const executionContext = await initInsomniaObject(context, scriptConsole.log);
 
@@ -21,7 +32,7 @@ export const runScript = async (
     return result;
   };
 
-  const AsyncFunction = (async () => { }).constructor;
+  const AsyncFunction = (async () => {}).constructor;
   const executeScript = AsyncFunction(
     'insomnia',
     'require',
@@ -36,7 +47,7 @@ export const runScript = async (
     `
       const $ = insomnia;
       ${script};
-      return insomnia;`
+      return insomnia;`,
   );
 
   const mutatedInsomniaObject = await executeScript(
@@ -51,7 +62,7 @@ export const runScript = async (
     undefined,
   );
   if (mutatedInsomniaObject == null || !(mutatedInsomniaObject instanceof InsomniaObject)) {
-    throw Error('insomnia object is invalid or script returns earlier than expected.');
+    throw new Error('insomnia object is invalid or script returns earlier than expected.');
   }
   const mutatedContextObject = mutatedInsomniaObject.toObject();
   const updatedRequest = mergeRequests(context.request, mutatedContextObject.request);
@@ -84,32 +95,32 @@ export const runScript = async (
     settings: updatedSettings,
     clientCertificates: updatedCertificates,
     cookieJar: updatedCookieJar,
-    globals: mutatedContextObject.globals,
+    globals: context.globals && {
+      id: context.environment.id,
+      name: context.environment.name,
+      data: mutatedContextObject.globals,
+    },
+    baseGlobals: context.baseGlobals && {
+      id: context.baseEnvironment.id,
+      name: context.baseEnvironment.name,
+      data: mutatedContextObject.baseGlobals,
+    },
     requestTestResults: mutatedContextObject.requestTestResults,
     execution: mutatedContextObject.execution,
+    parentFolders: mutatedContextObject.parentFolders,
   };
 };
 
 // proxiedSetTimeout has to be here as callback could be an async task
-function proxiedSetTimeout(
-  callback: () => void,
-  ms?: number | undefined,
-) {
+function proxiedSetTimeout(callback: () => void, ms?: number | undefined) {
   let resolveHdl: (value: unknown) => void;
 
   new Promise(resolve => {
     resolveHdl = resolve;
   });
 
-  return setTimeout(
-    () => {
-      try {
-        callback();
-        resolveHdl(null);
-      } catch (e) {
-        throw e;
-      }
-    },
-    ms,
-  );
+  return setTimeout(() => {
+    callback();
+    resolveHdl(null);
+  }, ms);
 }

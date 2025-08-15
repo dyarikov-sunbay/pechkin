@@ -25,6 +25,11 @@ export function init(): BaseGitRepository {
       name: '',
       email: '',
     },
+    cachedGitLastCommitTime: null,
+    cachedGitRepositoryBranch: null,
+    cachedGitLastAuthor: null,
+    hasUncommittedChanges: false,
+    hasUnpushedChanges: false,
     uriNeedsMigration: true,
   };
 }
@@ -37,12 +42,15 @@ export interface BaseGitRepository {
     name: string;
     email: string;
   };
+  hasUncommittedChanges: boolean;
+  cachedGitLastCommitTime: number | null;
+  cachedGitRepositoryBranch: string | null;
+  cachedGitLastAuthor: string | null;
+  hasUnpushedChanges: boolean;
   uriNeedsMigration: boolean;
 }
 
-export const isGitRepository = (model: Pick<BaseModel, 'type'>): model is GitRepository => (
-  model.type === type
-);
+export const isGitRepository = (model: Pick<BaseModel, 'type'>): model is GitRepository => model.type === type;
 
 export function migrate(doc: GitRepository) {
   return doc;

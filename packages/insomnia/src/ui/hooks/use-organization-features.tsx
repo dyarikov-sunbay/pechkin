@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useFetcher, useParams } from 'react-router-dom';
+import { useFetcher, useParams } from 'react-router';
 
 import { isScratchpadOrganizationId } from '../../models/organization';
 import type { OrganizationFeatureLoaderData } from '../routes/organization';
@@ -24,16 +24,20 @@ export function useOrganizationPermissions() {
 
   const { featuresPromise, billingPromise } = permissionsFetcher.data || {};
   // Features and billing return a promise using react-router's defer() so we need to wait for the data to be available.
-  const [features = {
-    gitSync: { enabled: false, reason: 'Insomnia API unreachable' },
-  }] = useLoaderDeferData(featuresPromise);
+  const [
+    features = {
+      gitSync: { enabled: false, reason: 'Insomnia API unreachable' },
+    },
+  ] = useLoaderDeferData(featuresPromise);
 
-  const [billing = {
-    isActive: true,
-    expirationErrorMessage: '',
-    expirationWarningMessage: '',
-    accessDenied: false,
-  }] = useLoaderDeferData(billingPromise);
+  const [
+    billing = {
+      isActive: true,
+      expirationErrorMessage: '',
+      expirationWarningMessage: '',
+      accessDenied: false,
+    },
+  ] = useLoaderDeferData(billingPromise);
 
   return { features, billing };
 }

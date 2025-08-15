@@ -1,16 +1,16 @@
-import crypto from 'crypto';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+
 import { format } from 'date-fns';
-import fs from 'fs';
 import iconv from 'iconv-lite';
 import { JSONPath } from 'jsonpath-plus';
-import os from 'os';
 import { CookieJar } from 'tough-cookie';
 import * as uuid from 'uuid';
 
-import type { Request, RequestParameter } from '../../../models/request';
-import type { Response } from '../../../models/response';
+import type { RequestParameter } from '../../../models/request';
 import type { TemplateTag } from '../../../plugins';
-import type { PluginTemplateTag } from '../../../templating/extensions';
+import type { PluginTemplateTag } from '../../../templating/types';
 import { invariant } from '../../../utils/invariant';
 import { buildQueryStringFromParams, joinUrlAndQueryString, smartEncodeUrl } from '../../../utils/url/querystring';
 import { fakerFunctions } from './faker-functions';
@@ -121,18 +121,23 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
 
         switch (dateType) {
           case 'millis':
-          case 'ms':
+          case 'ms': {
             return now.getTime() + '';
+          }
           case 'unix':
           case 'seconds':
-          case 's':
+          case 's': {
             return Math.round(now.getTime() / 1000) + '';
-          case 'iso-8601':
+          }
+          case 'iso-8601': {
             return now.toISOString();
-          case 'custom':
+          }
+          case 'custom': {
             return format(now, formatStr);
-          default:
+          }
+          default: {
             throw new Error(`Invalid date type "${dateType}"`);
+          }
         }
       },
     },
@@ -155,13 +160,16 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
       run(_context, uuidType = 'v4') {
         switch ((uuidType + '').toLowerCase()) {
           case '1':
-          case 'v1':
+          case 'v1': {
             return uuid.v1();
+          }
           case '4':
-          case 'v4':
+          case 'v4': {
             return uuid.v4();
-          default:
+          }
+          default: {
             throw new Error(`Invalid UUID type "${uuidType}"`);
+          }
         }
       },
     },
@@ -199,14 +207,13 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
           try {
             const results = JSONPath({ json: value, path: filter });
             value = Array.isArray(results) ? results[0] : results;
-          } catch (err) { }
+          } catch (err) {}
         }
 
         if (typeof value !== 'string') {
           return JSON.stringify(value);
-        } else {
-          return value;
         }
+        return value;
       },
     },
   },
@@ -348,7 +355,7 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
           throw new Error(`Workspace not found for ${meta.workspaceId}`);
         }
 
-        const cookieJar = await context.util.models.cookieJar.getOrCreateForWorkspace(workspace);
+        const cookieJar = await context.util.models.cookieJar.getOrCreateForParentId(workspace._id);
 
         return new Promise((resolve, reject) => {
           let jar;
@@ -377,9 +384,7 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
             const cookie = cookies.find(cookie => cookie.key === name);
             if (!cookie) {
               const names = cookies.map(c => `"${c.key}"`).join(',\n\t');
-              throw new Error(
-                `No cookie with name "${name}".\nChoices are [\n\t${names}\n] for url "${url}"`,
-              );
+              throw new Error(`No cookie with name "${name}".\nChoices are [\n\t${names}\n] for url "${url}"`);
             } else {
               resolve(cookie ? cookie.value : null);
             }
@@ -455,10 +460,7 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
         // We do this because we may render the prompt multiple times per request.
         // We cache it under the requestId so it only prompts once. We then clear
         // the cache in a response hook when the request is sent.
-        const titleHash = crypto
-          .createHash('md5')
-          .update(title)
-          .digest('hex');
+        const titleHash = crypto.createHash('md5').update(title).digest('hex');
         const storageKey = explicitStorageKey || `${context.meta.requestId}.${titleHash}`;
         const cachedValue = await context.store.getItem(storageKey);
 
@@ -478,9 +480,8 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
         if (context.renderPurpose !== 'send') {
           if (cachedValue !== null) {
             return cachedValue;
-          } else {
-            return defaultValue || '';
           }
+          return defaultValue || '';
         }
 
         const value = await context.app.prompt(title || 'Enter Value', {
@@ -541,12 +542,15 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
           hide: args => !(args[0].value !== 'raw' && args[0].value !== 'url'),
           displayName: args => {
             switch (args[0].value) {
-              case 'body':
+              case 'body': {
                 return 'Filter (JSONPath or XPath)';
-              case 'header':
+              }
+              case 'header': {
                 return 'Header Name';
-              default:
+              }
+              default: {
                 return 'Filter';
+              }
             }
           },
         },
@@ -610,22 +614,27 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
         let shouldResend = false;
         const environmentId = context.context.getEnvironmentId?.() || null;
         const globalEnvironmentId = context.context.getGlobalEnvironmentId?.() || null;
-        let response: Response = await context.util.models.response.getLatestForRequestId(id, environmentId);
+        let response = await context.util.models.response.getLatestForRequestId(id, environmentId);
 
         switch (resendBehavior) {
-          case 'no-history':
+          case 'no-history': {
             if (!response) {
               shouldResend = true;
             } else {
               // if either global environment or collection environment changed, resend the request
-              shouldResend = response.environmentId !== environmentId || response.globalEnvironmentId !== globalEnvironmentId;
+              shouldResend =
+                response.environmentId !== environmentId || response.globalEnvironmentId !== globalEnvironmentId;
             }
             break;
+          }
 
-          case 'when-expired':
+          case 'when-expired': {
             if (!response) {
               shouldResend = true;
-            } else if (response.environmentId !== environmentId || response.globalEnvironmentId !== globalEnvironmentId) {
+            } else if (
+              response.environmentId !== environmentId ||
+              response.globalEnvironmentId !== globalEnvironmentId
+            ) {
               // if either global environment or collection environment changed, resend the request
               shouldResend = true;
             } else {
@@ -633,21 +642,23 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
               shouldResend = ageSeconds > maxAgeSeconds;
             }
             break;
+          }
 
-          case 'always':
+          case 'always': {
             shouldResend = true;
             break;
+          }
 
           case 'never':
-          default:
+          default: {
             shouldResend = false;
             break;
-
+          }
         }
 
         // Make sure we only send the request once per render so we don't have infinite recursion
-        const requestChain = context.context.getExtraInfo?.('requestChain') || [];
-        if (requestChain.some((id: any) => id === request._id)) {
+        const requestChain = context.context.getExtraInfo()?.requestChain || [];
+        if (requestChain.includes(request._id)) {
           console.log('[response tag] Preventing recursive render');
           shouldResend = false;
         }
@@ -655,9 +666,10 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
         if (shouldResend && context.renderPurpose === 'send') {
           console.log('[response tag] Resending dependency');
           requestChain.push(request._id);
-          response = await context.network.sendRequest(request, [
-            { name: 'requestChain', value: requestChain },
-          ]);
+          response = await context.network.sendRequest(request, {
+            requestChain,
+            environmentId: environmentId || undefined,
+          });
         }
 
         if (!response) {
@@ -675,19 +687,22 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
           throw new Error('No successful responses for request');
         }
 
-        if ((field !== 'raw' && field !== 'url') && !filter) {
+        if (field !== 'raw' && field !== 'url' && !filter) {
           throw new Error(`No ${field} filter specified`);
         }
 
         const sanitizedFilter = filter.trim();
-        const bodyBuffer = context.util.models.response.getBodyBuffer(response, '');
+        const bodyBuffer = await context.util.models.response.getBodyBuffer(response, '');
         const match = response.contentType && response.contentType.match(/charset=([\w-]+)/);
         const charset = match && match.length >= 2 ? match[1] : 'utf-8';
         if (field === 'url') {
           return response.url;
         }
-        if (field === 'raw') {
+        if (field === 'raw' && bodyBuffer !== null) {
           // Sometimes iconv conversion fails so fallback to regular buffer
+          if (typeof bodyBuffer === 'string') {
+            throw new Error(bodyBuffer);
+          }
           try {
             return iconv.decode(bodyBuffer, charset);
           } catch (err) {
@@ -706,9 +721,13 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
           }
           return header.value;
         }
-        if (field === 'body') {
+
+        if (field === 'body' && bodyBuffer !== null) {
           // Sometimes iconv conversion fails so fallback to regular buffer
           let body;
+          if (typeof bodyBuffer === 'string') {
+            throw new Error(bodyBuffer);
+          }
           try {
             body = iconv.decode(bodyBuffer, charset);
           } catch (err) {
@@ -745,55 +764,57 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
 
             if (typeof results[0] !== 'string') {
               return JSON.stringify(results[0]);
-            } else {
-              return results[0];
             }
-          } else {
-            const DOMParser = (await import('@xmldom/xmldom')).DOMParser;
-            const dom = new DOMParser().parseFromString(body);
-            if (sanitizedFilter === undefined) {
-              throw new Error('Must pass an XPath query.');
+            return results[0];
+          }
+          const DOMParser = (await import('@xmldom/xmldom')).DOMParser;
+          const document = new DOMParser().parseFromString(body, 'text/xml');
+          if (sanitizedFilter === undefined) {
+            throw new Error('Must pass an XPath query.');
+          }
+          try {
+            const selectedValues = (await import('xpath')).select(sanitizedFilter, document as unknown as Node); // https://github.com/xmldom/xmldom/issues/724
+
+            let results: { outer: string; inner: string | null }[] = [];
+
+            // Functions return plain strings
+            if (typeof selectedValues === 'string') {
+              results = [{ outer: selectedValues, inner: selectedValues }];
             }
-            try {
-              const selectedValues = (await import('xpath')).select(sanitizedFilter, dom);
 
-              let results: { outer: string; inner: string | null }[] = [];
+            results = (selectedValues as Node[])
+              .filter(
+                sv =>
+                  sv.nodeType === Node.ATTRIBUTE_NODE ||
+                  sv.nodeType === Node.ELEMENT_NODE ||
+                  sv.nodeType === Node.TEXT_NODE,
+              )
+              .map(selectedValue => {
+                const outer = selectedValue.toString().trim();
+                if (selectedValue.nodeType === Node.ATTRIBUTE_NODE) {
+                  return { outer, inner: selectedValue.nodeValue };
+                }
+                if (selectedValue.nodeType === Node.ELEMENT_NODE) {
+                  return { outer, inner: selectedValue.childNodes.toString() };
+                }
+                if (selectedValue.nodeType === Node.TEXT_NODE) {
+                  return { outer, inner: selectedValue.toString().trim() };
+                }
+                return { outer, inner: null };
+              });
 
-              // Functions return plain strings
-              if (typeof selectedValues === 'string') {
-                results = [{ outer: selectedValues, inner: selectedValues }];
-              }
-
-              results = (selectedValues as Node[])
-                .filter(sv => sv.nodeType === Node.ATTRIBUTE_NODE
-                  || sv.nodeType === Node.ELEMENT_NODE
-                  || sv.nodeType === Node.TEXT_NODE)
-                .map(selectedValue => {
-                  const outer = selectedValue.toString().trim();
-                  if (selectedValue.nodeType === Node.ATTRIBUTE_NODE) {
-                    return { outer, inner: selectedValue.nodeValue };
-                  }
-                  if (selectedValue.nodeType === Node.ELEMENT_NODE) {
-                    return { outer, inner: selectedValue.childNodes.toString() };
-                  }
-                  if (selectedValue.nodeType === Node.TEXT_NODE) {
-                    return { outer, inner: selectedValue.toString().trim() };
-                  }
-                  return { outer, inner: null };
-                });
-
-              if (results.length === 0) {
-                throw new Error(`Returned no results: ${sanitizedFilter}`);
-              } else if (results.length > 1) {
-                throw new Error(`Returned more than one result: ${sanitizedFilter}`);
-              }
-
-              return results[0].inner;
-            } catch (err) {
-              throw new Error(`Invalid XPath query: ${sanitizedFilter}`);
+            if (results.length === 0) {
+              throw new Error(`Returned no results: ${sanitizedFilter}`);
+            } else if (results.length > 1) {
+              throw new Error(`Returned more than one result: ${sanitizedFilter}`);
             }
+
+            return results[0].inner;
+          } catch (err) {
+            throw new Error(`Invalid XPath query: ${sanitizedFilter}`);
           }
         }
+        throw new Error('Oops');
       },
     },
   },
@@ -858,19 +879,21 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
         {
           type: 'string',
           hide: args =>
-            ['url', 'oauth2', 'oauth2-identity', 'oauth2-refresh', 'name', 'folder'].includes(
-              args[0].value + '',
-            ),
+            ['url', 'oauth2', 'oauth2-identity', 'oauth2-refresh', 'name', 'folder'].includes(args[0].value + ''),
           displayName: args => {
             switch (args[0].value) {
-              case 'cookie':
+              case 'cookie': {
                 return 'Cookie Name';
-              case 'parameter':
+              }
+              case 'parameter': {
                 return 'Query Parameter Name';
-              case 'header':
+              }
+              case 'header': {
                 return 'Header Name';
-              default:
+              }
+              default: {
                 return 'Name';
+              }
             }
           },
         },
@@ -889,7 +912,7 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
           return null;
         }
 
-        const request: Request = await context.util.models.request.getById(meta.requestId);
+        const request = await context.util.models.request.getById(meta.requestId);
         const workspace = await context.util.models.workspace.getById(meta.workspaceId);
 
         if (!request) {
@@ -903,25 +926,37 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
         if (attribute === 'url') {
           for (const p of request.parameters) {
             params.push({
-              name: await context.util.render(p.name),
-              value: await context.util.render(p.value),
+              name: (await context.util.render(p.name)) || '',
+              value: (await context.util.render(p.value)) || '',
             });
           }
-          return smartEncodeUrl(joinUrlAndQueryString((await context.util.render(request.url)), buildQueryStringFromParams(params)), request.settingEncodeUrl);
+          const rendered = await context.util.render(request.url);
+          return rendered
+            ? smartEncodeUrl(
+                joinUrlAndQueryString(rendered, buildQueryStringFromParams(params)),
+                request.settingEncodeUrl,
+              )
+            : '';
         }
         if (attribute === 'cookie') {
           if (!name) {
             throw new Error('No cookie specified');
           }
 
-          const cookieJar = await context.util.models.cookieJar.getOrCreateForWorkspace(workspace);
+          const cookieJar = await context.util.models.cookieJar.getOrCreateForParentId(workspace._id);
           for (const p of request.parameters) {
             params.push({
-              name: await context.util.render(p.name),
-              value: await context.util.render(p.value),
+              name: (await context.util.render(p.name)) || '',
+              value: (await context.util.render(p.value)) || '',
             });
           }
-          const url = smartEncodeUrl(joinUrlAndQueryString((await context.util.render(request.url)), buildQueryStringFromParams(params)), request.settingEncodeUrl);
+          const rendered = await context.util.render(request.url);
+          const url = rendered
+            ? smartEncodeUrl(
+                joinUrlAndQueryString(rendered, buildQueryStringFromParams(params)),
+                request.settingEncodeUrl,
+              )
+            : '';
           return new Promise((resolve, reject) => {
             let jar;
             try {
@@ -948,9 +983,7 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
               const cookie = cookies.find(cookie => cookie.key === name);
               if (!cookie) {
                 const names = cookies.map(c => `"${c.key}"`).join(',\n\t');
-                throw new Error(
-                  `No cookie with name "${name}".\nChoices are [\n\t${names}\n] for url "${url}"`,
-                );
+                throw new Error(`No cookie with name "${name}".\nChoices are [\n\t${names}\n] for url "${url}"`);
               } else {
                 resolve(cookie ? cookie.value : null);
               }
@@ -970,16 +1003,14 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
 
           for (const queryParameter of request.parameters) {
             const queryParameterName = await context.util.render(queryParameter.name);
-            parameterNames.push(queryParameterName);
-            if (queryParameterName.toLowerCase() === name.toLowerCase()) {
+            queryParameterName && parameterNames.push(queryParameterName);
+            if (queryParameterName?.toLowerCase() === name.toLowerCase()) {
               return context.util.render(queryParameter.value);
             }
           }
 
           const parameterNamesStr = parameterNames.map(n => `"${n}"`).join(',\n\t');
-          throw new Error(
-            `No query parameter with name "${name}".\nChoices are [\n\t${parameterNamesStr}\n]`,
-          );
+          throw new Error(`No query parameter with name "${name}".\nChoices are [\n\t${parameterNamesStr}\n]`);
         }
         if (attribute === 'header') {
           if (!name) {
@@ -994,8 +1025,8 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
 
           for (const header of request.headers) {
             const headerName = await context.util.render(header.name);
-            headerNames.push(headerName);
-            if (headerName.toLowerCase() === name.toLowerCase()) {
+            headerName && headerNames.push(headerName);
+            if (headerName?.toLowerCase() === name.toLowerCase()) {
               return context.util.render(header.value);
             }
           }
@@ -1025,10 +1056,7 @@ const localTemplatePlugins: { templateTag: PluginTemplateTag }[] = [
           const ancestors = await context.util.models.request.getAncestors(request);
           const doc = ancestors[folderIndex || 0];
           if (!doc) {
-            throw new Error(
-              `Could not get folder by index ${folderIndex}. Must be between 0-${ancestors.length -
-              1}`,
-            );
+            throw new Error(`Could not get folder by index ${folderIndex}. Must be between 0-${ancestors.length - 1}`);
           }
           return doc ? doc.name : null;
         }

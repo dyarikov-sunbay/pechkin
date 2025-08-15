@@ -1,5 +1,6 @@
+import fs from 'node:fs';
+
 import clone from 'clone';
-import fs from 'fs';
 import type * as Har from 'har-format';
 import { Cookie as ToughCookie } from 'tough-cookie';
 
@@ -11,14 +12,14 @@ import { isWorkspace, type Workspace } from '../models/workspace';
 import { getAuthHeader } from '../network/authentication';
 import * as plugins from '../plugins';
 import * as pluginContexts from '../plugins/context/index';
-import { RenderError } from '../templating/index';
+import { RenderError } from '../templating/render-error';
+import type { RenderedRequest } from '../templating/types';
 import { parseGraphQLReqeustBody } from '../utils/graph-ql';
 import { smartEncodeUrl } from '../utils/url/querystring';
 import { getAppVersion } from './constants';
 import { jarFromCookies } from './cookies';
 import { database } from './database';
 import { filterHeaders, getSetCookieHeaders, hasAuthHeader } from './misc';
-import type { RenderedRequest } from './render';
 import { getRenderedRequestAndContext } from './render';
 
 export interface ExportRequest {
@@ -144,7 +145,7 @@ export async function exportHarResponse(response: Response | null) {
     httpVersion: 'HTTP/1.1',
     cookies: getResponseCookies(response),
     headers: getResponseHeaders(response),
-    content: getResponseContent(response),
+    content: await getResponseContent(response),
     redirectURL: '',
     headersSize: -1,
     bodySize: -1,
@@ -152,11 +153,7 @@ export async function exportHarResponse(response: Response | null) {
   return harResponse;
 }
 
-export async function exportHarRequest(
-  requestId: string,
-  environmentId: string,
-  addContentLength = false,
-) {
+export async function exportHarRequest(requestId: string, environmentId: string, addContentLength = false) {
   const request = await models.request.getById(requestId);
 
   if (!request) {
@@ -166,17 +163,10 @@ export async function exportHarRequest(
   return exportHarWithRequest(request, environmentId, addContentLength);
 }
 
-export async function exportHarWithRequest(
-  request: Request,
-  environmentId?: string,
-  addContentLength = false,
-) {
+export async function exportHarWithRequest(request: Request, environmentId?: string, addContentLength = false) {
   try {
     const renderResult = await getRenderedRequestAndContext({ request, environment: environmentId });
-    const renderedRequest = await _applyRequestPluginHooks(
-      renderResult.request,
-      renderResult.context,
-    );
+    const renderedRequest = await _applyRequestPluginHooks(renderResult.request, renderResult.context);
     parseGraphQLReqeustBody(renderedRequest);
     return exportHarWithRenderedRequest(renderedRequest, addContentLength);
   } catch (err) {
@@ -213,15 +203,11 @@ async function _applyRequestPluginHooks(
   return newRenderedRequest;
 }
 
-export async function exportHarWithRenderedRequest(
-  renderedRequest: RenderedRequest,
-  addContentLength = false,
-) {
+export async function exportHarWithRenderedRequest(renderedRequest: RenderedRequest, addContentLength = false) {
   const url = smartEncodeUrl(renderedRequest.url, renderedRequest.settingEncodeUrl);
 
   if (addContentLength) {
-    const hasContentLengthHeader =
-      filterHeaders(renderedRequest.headers, 'Content-Length').length > 0;
+    const hasContentLengthHeader = filterHeaders(renderedRequest.headers, 'Content-Length').length > 0;
 
     if (!hasContentLengthHeader) {
       const name = 'Content-Length';
@@ -277,23 +263,19 @@ function getRequestCookies(renderedRequest: RenderedRequest) {
 }
 
 export function getResponseCookiesFromHeaders(headers: Har.Cookie[]) {
-  return getSetCookieHeaders(headers)
-    .reduce((accumulator, harCookie) => {
-      let cookie: null | undefined | ToughCookie = null;
+  return getSetCookieHeaders(headers).reduce((accumulator, harCookie) => {
+    let cookie: null | undefined | ToughCookie = null;
 
-      try {
-        cookie = ToughCookie.parse(harCookie.value || '');
-      } catch (error) { }
+    try {
+      cookie = ToughCookie.parse(harCookie.value || '', { loose: true });
+    } catch (error) {}
 
-      if (cookie === null || cookie === undefined) {
-        return accumulator;
-      }
+    if (cookie === null || cookie === undefined) {
+      return accumulator;
+    }
 
-      return [
-        ...accumulator,
-        mapCookie(cookie),
-      ];
-    }, [] as Har.Cookie[]);
+    return [...accumulator, mapCookie(cookie)];
+  }, [] as Har.Cookie[]);
 }
 
 function getResponseCookies(response: Response) {
@@ -343,8 +325,8 @@ function mapCookie(cookie: ToughCookie) {
   return harCookie;
 }
 
-function getResponseContent(response: Response) {
-  let body = models.response.getBodyBuffer(response);
+async function getResponseContent(response: Response) {
+  let body = await models.response.getBodyBuffer(response);
 
   if (body === null) {
     body = Buffer.alloc(0);
@@ -403,9 +385,7 @@ function getRequestPostData(renderedRequest: RenderedRequest): Har.PostData | un
       mimeType: body.mimeType || '',
       params: body.params.map(({ name, value, fileName, type }) => ({
         name,
-        ...(type === 'file'
-          ? { fileName }
-          : { value }),
+        ...(type === 'file' ? { fileName } : { value }),
       })),
     };
   }

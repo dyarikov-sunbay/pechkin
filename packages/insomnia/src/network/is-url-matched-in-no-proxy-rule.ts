@@ -1,4 +1,4 @@
-import { parse as urlParse } from 'url';
+import { parse as urlParse } from 'node:url';
 
 function formatHostname(rawHostname: string) {
   // canonicalize the hostname, so that 'oogle.com' won't match 'google.com'
@@ -11,7 +11,7 @@ function parseNoProxyZone(zone: string) {
   const zoneParts = zone.split(':', 2);
   const zoneHost = formatHostname(zoneParts[0]);
   const zonePort = zoneParts[1];
-  const hasPort = zone.indexOf(':') > -1;
+  const hasPort = zone.includes(':');
 
   return { hostname: zoneHost, port: zonePort, hasPort: hasPort };
 }
@@ -19,7 +19,7 @@ function parseNoProxyZone(zone: string) {
 function matchesHostname(hostname: string, noProxyZoneHostname: string) {
   const wildcardNeedle = noProxyZoneHostname.startsWith('.*.') ? noProxyZoneHostname.slice(2) : noProxyZoneHostname;
   const isMatchedAt = hostname.indexOf(wildcardNeedle);
-  return (isMatchedAt > -1 && (isMatchedAt === hostname.length - wildcardNeedle.length));
+  return isMatchedAt > -1 && isMatchedAt === hostname.length - wildcardNeedle.length;
 }
 
 export function isUrlMatchedInNoProxyRule(url: string | undefined, noProxyRule: any) {
@@ -32,7 +32,7 @@ export function isUrlMatchedInNoProxyRule(url: string | undefined, noProxyRule: 
   }
   const port = uri.port || (uri.protocol === 'https:' ? '443' : '80');
   // TODO: remove non-null assertion
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+
   const hostname = formatHostname(uri.hostname!);
   const noProxyList = noProxyRule.split(',');
 
@@ -43,7 +43,7 @@ export function isUrlMatchedInNoProxyRule(url: string | undefined, noProxyRule: 
     }
     const hostnameMatched = matchesHostname(hostname, noProxyZone.hostname);
     if (noProxyZone.hasPort) {
-      return (port === noProxyZone.port) && hostnameMatched;
+      return port === noProxyZone.port && hostnameMatched;
     }
     return hostnameMatched;
   });

@@ -1,6 +1,6 @@
 import classnames from 'classnames';
 import React, { type FC, type PropsWithChildren, type ReactNode } from 'react';
-import { useRouteLoaderData } from 'react-router-dom';
+import { useRouteLoaderData } from 'react-router';
 
 import type { RequestLoaderData } from '../../../../routes/request';
 import type { RequestGroupLoaderData } from '../../../../routes/request-group';
@@ -28,7 +28,7 @@ export const AuthRow: FC<PropsWithChildren<Props>> = ({ labelFor, label, help, d
       </td>
       <td className="wide">
         <div
-          className={classnames('form-control form-control--underlined no-margin flex wide', {
+          className={classnames('form-control form-control--underlined no-margin wide flex', {
             'form-control--inactive': isDisabled,
           })}
         >

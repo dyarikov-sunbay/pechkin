@@ -20,6 +20,7 @@ interface Props {
   protoDirectories: ExpandedProtoDirectory[];
   selectedId?: string;
   handleSelect: SelectProtoFileHandler;
+  handleUnselect: SelectProtoFileHandler;
   handleDelete: DeleteProtoFileHandler;
   handleUpdate: UpdateProtoFileHandler;
   handleDeleteDirectory: DeleteProtoDirectoryHandler;
@@ -29,14 +30,15 @@ const recursiveRender = (
   indent: number,
   { dir, files, subDirs }: ExpandedProtoDirectory,
   handleSelect: SelectProtoFileHandler,
+  handleUnselect: SelectProtoFileHandler,
   handleUpdate: UpdateProtoFileHandler,
   handleDelete: DeleteProtoFileHandler,
   handleDeleteDirectory: DeleteProtoDirectoryHandler,
-  selectedId?: string
+  selectedId?: string,
 ): React.ReactNode => [
   dir && (
     <li
-      className='row-spaced'
+      className="row-spaced"
       style={{
         paddingLeft: `${indent * 1}rem`,
       }}
@@ -63,20 +65,29 @@ const recursiveRender = (
     </li>
   ),
   ...files.map(f => (
-    <li
-      className='row-spaced cursor-pointer'
-      key={f._id}
-      onClick={() => handleSelect(f._id)}
-    >
+    <li className="row-spaced cursor-pointer" key={f._id} onClick={() => handleSelect(f._id)}>
       <>
-        <Checkbox className="py-0" isSelected={f._id === selectedId} onChange={isSelected => isSelected && handleSelect(f._id)}>
+        <Checkbox
+          className="py-0"
+          isSelected={f._id === selectedId}
+          onChange={isSelected => {
+            if (isSelected) {
+              handleSelect(f._id);
+            } else {
+              handleUnselect(f._id);
+            }
+          }}
+        >
           {({ isSelected }) => {
-            return <>
-              {isSelected ?
-                <i className="fa fa-square-check fa-1x h-4 mr-2" style={{ color: 'rgb(74 222 128)' }} /> :
-                <i className="fa fa-square fa-1x h-4 mr-2" />
-              }
-            </>;
+            return (
+              <>
+                {isSelected ? (
+                  <i className="fa fa-square-check fa-1x mr-2 h-4" style={{ color: 'rgb(74 222 128)' }} />
+                ) : (
+                  <i className="fa fa-square fa-1x mr-2 h-4" />
+                )}
+              </>
+            );
           }}
         </Checkbox>
         <span className="wide">
@@ -115,29 +126,29 @@ const recursiveRender = (
       indent + 1,
       sd,
       handleSelect,
+      handleUnselect,
       handleUpdate,
       handleDelete,
       handleDeleteDirectory,
-      selectedId
-    )
+      selectedId,
+    ),
   ),
 ];
 
 export const ProtoFileList: FunctionComponent<Props> = props => (
   <ul className="divide-y divide-solid divide-[--hl]">
-    {!props.protoDirectories.length && (
-      <li>No proto files exist for this workspace</li>
-    )}
+    {!props.protoDirectories.length && <li>No proto files exist for this workspace</li>}
     {props.protoDirectories.map(dir =>
       recursiveRender(
         0,
         dir,
         props.handleSelect,
+        props.handleUnselect,
         props.handleUpdate,
         props.handleDelete,
         props.handleDeleteDirectory,
-        props.selectedId
-      )
+        props.selectedId,
+      ),
     )}
   </ul>
 );

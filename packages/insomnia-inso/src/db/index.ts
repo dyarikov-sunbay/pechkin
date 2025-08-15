@@ -1,8 +1,8 @@
-import { stat } from 'fs/promises';
-import { CaCertificate } from 'insomnia/src/models/ca-certificate';
-import { ClientCertificate } from 'insomnia/src/models/client-certificate';
-import { CookieJar } from 'insomnia/src/models/cookie-jar';
-import { Settings } from 'insomnia/src/models/settings';
+import { stat } from 'node:fs/promises';
+
+import type { CaCertificate } from 'insomnia/src/models/ca-certificate';
+import type { ClientCertificate } from 'insomnia/src/models/client-certificate';
+import type { CookieJar } from 'insomnia/src/models/cookie-jar';
 
 import { logger } from '../cli';
 import gitAdapter from './adapters/git-adapter';
@@ -30,7 +30,6 @@ export interface Database {
   ClientCertificate: ClientCertificate[];
   CaCertificate: CaCertificate[];
   CookieJar: CookieJar[];
-  Settings: Settings[];
 }
 
 export const emptyDb = (): Database => ({
@@ -45,13 +44,9 @@ export const emptyDb = (): Database => ({
   ClientCertificate: [],
   CaCertificate: [],
   CookieJar: [],
-  Settings: [],
 });
 
-export type DbAdapter = (
-  dir: string,
-  filterTypes?: (keyof Database)[],
-) => Promise<Database | null>;
+export type DbAdapter = (dir: string, filterTypes?: (keyof Database)[]) => Promise<Database | null>;
 
 interface Options {
   pathToSearch: string;
@@ -65,10 +60,7 @@ export const isFile = async (path: string) => {
     return false;
   }
 };
-export const loadDb = async ({
-  pathToSearch,
-  filterTypes,
-}: Options) => {
+export const loadDb = async ({ pathToSearch, filterTypes }: Options) => {
   // if path to file is provided try to it is an insomnia export file
   const isFilePath = await isFile(pathToSearch);
   if (isFilePath) {

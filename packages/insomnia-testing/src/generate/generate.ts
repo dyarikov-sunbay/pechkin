@@ -1,4 +1,4 @@
-import { writeFile } from 'fs';
+import { writeFile } from 'node:fs';
 
 import { escapeJsStr, indent } from './util';
 
@@ -30,10 +30,7 @@ export const generate = (suites: TestSuite[]) => {
   return lines.join('\n');
 };
 
-export const generateToFile = async (
-  filepath: string,
-  suites: TestSuite[],
-) => {
+export const generateToFile = async (filepath: string, suites: TestSuite[]) => {
   return new Promise<void>((resolve, reject) => {
     const js = generate(suites);
     return writeFile(filepath, js, err => {
@@ -46,10 +43,7 @@ export const generateToFile = async (
   });
 };
 
-const generateSuiteLines = (
-  n: number,
-  suite?: TestSuite | null,
-) => {
+const generateSuiteLines = (n: number, suite?: TestSuite | null) => {
   if (!suite) {
     return [];
   }
@@ -58,17 +52,17 @@ const generateSuiteLines = (
   lines.push(indent(n, `describe('${escapeJsStr(suite.name)}', () => {`));
   const suites = suite.suites || [];
 
-  for (let i = 0; i < suites.length; i++) {
+  for (const [i, suite_] of suites.entries()) {
     if (i !== 0) {
       lines.push('');
     }
 
-    lines.push(...generateSuiteLines(n + 1, suites[i]));
+    lines.push(...generateSuiteLines(n + 1, suite_));
   }
 
   const tests = suite.tests || [];
 
-  for (let i = 0; i < tests.length; i++) {
+  for (const [i, test] of tests.entries()) {
     // Add blank like if
     // - it's the first test
     // - we've outputted suites above
@@ -76,7 +70,7 @@ const generateSuiteLines = (
       lines.push('');
     }
 
-    lines.push(...generateTestLines(n + 1, tests[i]));
+    lines.push(...generateTestLines(n + 1, test));
   }
 
   lines.push(indent(n, '});'));
@@ -98,9 +92,7 @@ const generateTestLines = (num: number, test?: Test | null) => {
 
   if (typeof defaultRequestId === 'string') {
     lines.push(indent(num, '// Set active request on global insomnia object'));
-    lines.push(
-      indent(num, `insomnia.setActiveRequestId('${defaultRequestId}');`),
-    );
+    lines.push(indent(num, `insomnia.setActiveRequestId('${defaultRequestId}');`));
   }
 
   // Add user-defined test source

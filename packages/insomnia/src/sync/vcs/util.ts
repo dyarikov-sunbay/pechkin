@@ -1,5 +1,6 @@
+import crypto from 'node:crypto';
+
 import clone from 'clone';
-import crypto from 'crypto';
 
 import { strings } from '../../common/strings';
 import type { BaseModel } from '../../models';
@@ -51,9 +52,7 @@ export function generateCandidateMap(candidates: StatusCandidate[]): StatusCandi
   return map;
 }
 
-export function combinedMapKeys<T extends SnapshotStateMap | StatusCandidateMap>(
-  ...maps: T[]
-): DocumentKey[] {
+export function combinedMapKeys<T extends SnapshotStateMap | StatusCandidateMap>(...maps: T[]): DocumentKey[] {
   const keyMap: Record<string, unknown> = {};
 
   for (const map of maps) {
@@ -239,10 +238,7 @@ export function threeWayMerge(
   };
 }
 
-export function compareBranches(
-  a: Branch | null,
-  b: Branch | null,
-): Compare {
+export function compareBranches(a: Branch | null, b: Branch | null): Compare {
   const snapshotsA = a ? a.snapshots : [];
   const snapshotsB = b ? b.snapshots : [];
   const latestA = snapshotsA[snapshotsA.length - 1] || null;
@@ -285,10 +281,7 @@ export interface StateDelta {
   remove: SnapshotStateEntry[];
 }
 
-export function stateDelta(
-  base: SnapshotState,
-  desired: SnapshotState,
-) {
+export function stateDelta(base: SnapshotState, desired: SnapshotState) {
   const result: StateDelta = {
     add: [],
     update: [],
@@ -391,11 +384,7 @@ export function getRootSnapshot(a: Branch | null, b: Branch | null): string | nu
   return rootSnapshotId || null;
 }
 
-export function preMergeCheck(
-  trunkState: SnapshotState,
-  otherState: SnapshotState,
-  candidates: StatusCandidate[],
-) {
+export function preMergeCheck(trunkState: SnapshotState, otherState: SnapshotState, candidates: StatusCandidate[]) {
   const conflicts: StatusCandidate[] = [];
   const dirty: StatusCandidate[] = [];
   const trunkMap = generateStateMap(trunkState);
@@ -430,13 +419,7 @@ export function preMergeCheck(
     }
 
     // Candidate is different but trunk and other are the same (preserve safe change)
-    if (
-      other &&
-      trunk &&
-      other.blob === trunk.blob &&
-      blobId !== other.blob &&
-      blobId !== trunk.blob
-    ) {
+    if (other && trunk && other.blob === trunk.blob && blobId !== other.blob && blobId !== trunk.blob) {
       dirty.push(candidate);
       continue;
     }
@@ -522,7 +505,7 @@ export function describeChanges<T extends BaseModel>(a: T, b: T): string[] {
   }
 
   const changes: string[] = [];
-  const allKeys = [...Object.keys({ ...a, ...b })] as (keyof T)[];
+  const allKeys = Object.keys({ ...a, ...b }) as (keyof T)[];
 
   for (const key of allKeys) {
     if (shouldIgnoreKey(key as keyof T, a)) {
@@ -553,24 +536,24 @@ export function describeChanges<T extends BaseModel>(a: T, b: T): string[] {
   return changes;
 }
 
-export const interceptAccessError = async <T>(
-  {
-    callback,
-    action,
-    resourceName,
-    resourceType = strings.collection.singular.toLowerCase(),
-  }: {
-    callback: () => T | Promise<T>;
-    action: string;
-    resourceName: string;
-    resourceType?: string;
-  }
-) => {
+export const interceptAccessError = async <T>({
+  callback,
+  action,
+  resourceName,
+  resourceType = strings.collection.singular.toLowerCase(),
+}: {
+  callback: () => T | Promise<T>;
+  action: string;
+  resourceName: string;
+  resourceType?: string;
+}) => {
   try {
     return await callback();
   } catch (error: unknown) {
     if (error instanceof Error && error.message.includes('invalid access')) {
-      throw new Error(`You no longer have permission to ${action} the "${resourceName}" ${resourceType}.  Contact your team administrator if you think this is an error.`);
+      throw new Error(
+        `You no longer have permission to ${action} the "${resourceName}" ${resourceType}.  Contact your team administrator if you think this is an error.`,
+      );
     }
     throw error;
   }

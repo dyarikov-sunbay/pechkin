@@ -1,6 +1,7 @@
 import React, { type FC, Fragment, useEffect, useRef, useState } from 'react';
 import { Button, Heading, Tab, TabList, TabPanel, Tabs, ToggleButton, Toolbar } from 'react-aria-components';
-import { useParams, useRouteLoaderData } from 'react-router-dom';
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { useParams, useRouteLoaderData } from 'react-router';
 import { useLocalStorage } from 'react-use';
 
 import { CONTENT_TYPE_JSON } from '../../../common/constants';
@@ -9,8 +10,14 @@ import type { Environment } from '../../../models/environment';
 import { type AuthTypes, getCombinedPathParametersFromUrl, type RequestPathParameter } from '../../../models/request';
 import type { WebSocketRequest } from '../../../models/websocket-request';
 import { getAuthObjectOrNull } from '../../../network/authentication';
+import { RenderError } from '../../../templating/render-error';
 import { tryToInterpolateRequestOrShowRenderErrorModal } from '../../../utils/try-interpolate';
-import { buildQueryStringFromParams, deconstructQueryStringToParams, extractQueryStringFromUrl, joinUrlAndQueryString } from '../../../utils/url/querystring';
+import {
+  buildQueryStringFromParams,
+  deconstructQueryStringToParams,
+  extractQueryStringFromUrl,
+  joinUrlAndQueryString,
+} from '../../../utils/url/querystring';
 import { useReadyState } from '../../hooks/use-ready-state';
 import { useRequestPatcher, useSettingsPatcher } from '../../hooks/use-request';
 import { useActiveRequestSyncVCSVersion, useGitVCSVersion } from '../../hooks/use-vcs-version';
@@ -30,7 +37,7 @@ import { RequestRenderErrorModal } from '../modals/request-render-error-modal';
 import { RequestSettingsModal } from '../modals/request-settings-modal';
 import { Pane } from '../panes/pane';
 import { RenderedQueryString } from '../rendered-query-string';
-import { WebSocketActionBar } from './action-bar';
+import { WebSocketActionBar, type WebSocketActionBarHandle } from './action-bar';
 
 const supportedAuthTypes: AuthTypes[] = ['apikey', 'basic', 'bearer'];
 
@@ -44,7 +51,8 @@ const PaneReadOnlyBanner = () => {
       }}
     >
       <p className="notice info no-margin-top no-margin-bottom">
-        This section is now locked since the connection has already been established. To change these settings, please disconnect first.
+        This section is now locked since the connection has already been established. To change these settings, please
+        disconnect first.
       </p>
     </div>
   );
@@ -57,12 +65,7 @@ interface FormProps {
   workspaceId: string;
 }
 
-const WebSocketRequestForm: FC<FormProps> = ({
-  request,
-  previewMode,
-  environmentId,
-  workspaceId,
-}) => {
+const WebSocketRequestForm: FC<FormProps> = ({ request, previewMode, environmentId, workspaceId }) => {
   const editorRef = useRef<CodeEditorHandle>(null);
 
   useEffect(() => {
@@ -106,7 +109,7 @@ const WebSocketRequestForm: FC<FormProps> = ({
       }
       window.main.webSocket.event.send({ requestId: request._id, payload: renderedMessage });
     } catch (err) {
-      if (err.type === 'render') {
+      if (err instanceof RenderError) {
         showModal(RequestRenderErrorModal, {
           request,
           error: err,
@@ -150,7 +153,7 @@ const WebSocketRequestForm: FC<FormProps> = ({
         event.preventDefault();
         interpolateOpenAndSend(editorRef.current?.getValue() || '');
       }}
-      className="w-full h-full relative box-border"
+      className="relative box-border h-full w-full"
     >
       <CodeEditor
         id="websocket-message-editor"
@@ -177,7 +180,12 @@ interface Props {
 export const WebSocketRequestPane: FC<Props> = ({ environment }) => {
   const { activeRequest, activeRequestMeta } = useRouteLoaderData('request/:requestId') as WebSocketRequestLoaderData;
 
-  const { workspaceId, requestId } = useParams() as { organizationId: string; projectId: string; workspaceId: string; requestId: string };
+  const { workspaceId, requestId } = useParams() as {
+    organizationId: string;
+    projectId: string;
+    workspaceId: string;
+    requestId: string;
+  };
   const readyState = useReadyState({ requestId: activeRequest._id, protocol: 'webSocket' });
   const { settings } = useRootLoaderData();
 
@@ -185,6 +193,7 @@ export const WebSocketRequestPane: FC<Props> = ({ environment }) => {
 
   const [previewMode, setPreviewMode] = useState(CONTENT_TYPE_JSON);
 
+  const webSocketActionBarRef = useRef<WebSocketActionBarHandle>(null);
   const [dismissPathParameterTip, setDismissPathParameterTip] = useLocalStorage('dismissPathParameterTip', '');
 
   useEffect(() => {
@@ -243,21 +252,20 @@ export const WebSocketRequestPane: FC<Props> = ({ environment }) => {
 
     // Remove the search string (?foo=bar&...) from the Url
     const url = activeRequest.url.replace(`?${query}`, '');
-    const parameters = [
-      ...activeRequest.parameters,
-      ...deconstructQueryStringToParams(query),
-    ];
+    const parameters = [...activeRequest.parameters, ...deconstructQueryStringToParams(query)];
 
     // Only update if url changed
     if (url !== activeRequest.url) {
       patchRequest(requestId, { url, parameters });
+      // Please refer to the comment in the request-pane
+      webSocketActionBarRef.current?.setUrl(url);
     }
   };
 
   const gitVersion = useGitVCSVersion();
   const activeRequestSyncVersion = useActiveRequestSyncVCSVersion();
   const patchRequest = useRequestPatcher();
-  const urlHasQueryParameters = activeRequest.url.indexOf('?') >= 0;
+  const urlHasQueryParameters = activeRequest.url.includes('?');
   // Reset the response pane state when we switch requests, the environment gets modified, or the (Git|Sync)VCS version changes
   const uniqueKey = `${environment?.modified}::${requestId}::${gitVersion}::${activeRequestSyncVersion}::${activeRequestMeta.activeResponseId}`;
   const requestAuth = getAuthObjectOrNull(activeRequest.authentication);
@@ -273,162 +281,166 @@ export const WebSocketRequestPane: FC<Props> = ({ environment }) => {
           defaultValue={activeRequest.url}
           readyState={readyState}
           onChange={url => patchRequest(requestId, { url })}
+          ref={webSocketActionBarRef}
         />
       </header>
-      <Tabs aria-label='Websocket request pane tabs' className="flex-1 w-full h-full flex flex-col">
-        <TabList className='w-full flex-shrink-0  overflow-x-auto border-solid scro border-b border-b-[--hl-md] bg-[--color-bg] flex items-center h-[--line-height-sm]' aria-label='Request pane tabs'>
+      <Tabs aria-label="Websocket request pane tabs" className="flex h-full w-full flex-1 flex-col">
+        <TabList
+          className="flex h-[--line-height-sm] w-full flex-shrink-0 items-center overflow-x-auto border-b border-solid border-b-[--hl-md] bg-[--color-bg]"
+          aria-label="Request pane tabs"
+        >
           <Tab
-            className='flex-shrink-0 h-full flex items-center justify-between cursor-pointer gap-2 outline-none select-none px-3 py-1 text-[--hl] aria-selected:text-[--color-font]  hover:bg-[--hl-sm] hover:text-[--color-font] aria-selected:bg-[--hl-xs] aria-selected:focus:bg-[--hl-sm] aria-selected:hover:bg-[--hl-sm] focus:bg-[--hl-sm] transition-colors duration-300'
-            id='params'
+            className="flex h-full flex-shrink-0 cursor-pointer select-none items-center justify-between gap-2 px-3 py-1 text-[--hl] outline-none transition-colors duration-300 hover:bg-[--hl-sm] hover:text-[--color-font] focus:bg-[--hl-sm] aria-selected:bg-[--hl-xs] aria-selected:text-[--color-font] aria-selected:hover:bg-[--hl-sm] aria-selected:focus:bg-[--hl-sm]"
+            id="params"
           >
             <span>Params</span>
             {parametersCount > 0 && (
-              <span className='p-1 min-w-6 h-6 flex items-center justify-center text-xs rounded-lg border border-solid border-[--hl]'>
+              <span className="flex h-6 min-w-6 items-center justify-center rounded-lg border border-solid border-[--hl] p-1 text-xs">
                 {parametersCount}
               </span>
             )}
           </Tab>
           <Tab
-            className='flex-shrink-0 h-full flex items-center justify-between cursor-pointer gap-2 outline-none select-none px-3 py-1 text-[--hl] aria-selected:text-[--color-font]  hover:bg-[--hl-sm] hover:text-[--color-font] aria-selected:bg-[--hl-xs] aria-selected:focus:bg-[--hl-sm] aria-selected:hover:bg-[--hl-sm] focus:bg-[--hl-sm] transition-colors duration-300'
-            id='content-type'
+            className="flex h-full flex-shrink-0 cursor-pointer select-none items-center justify-between gap-2 px-3 py-1 text-[--hl] outline-none transition-colors duration-300 hover:bg-[--hl-sm] hover:text-[--color-font] focus:bg-[--hl-sm] aria-selected:bg-[--hl-xs] aria-selected:text-[--color-font] aria-selected:hover:bg-[--hl-sm] aria-selected:focus:bg-[--hl-sm]"
+            id="content-type"
           >
             <span>Body</span>
-            <span className='p-1 min-w-6 h-6 flex items-center justify-center text-xs rounded-lg border border-solid border-[--hl]'>
-              <span className='w-2 h-2 bg-green-500 rounded-full' />
+            <span className="flex h-6 min-w-6 items-center justify-center rounded-lg border border-solid border-[--hl] p-1 text-xs">
+              <span className="h-2 w-2 rounded-full bg-green-500" />
             </span>
           </Tab>
           <Tab
-            className='flex-shrink-0 h-full flex items-center justify-between cursor-pointer gap-2 outline-none select-none px-3 py-1 text-[--hl] aria-selected:text-[--color-font]  hover:bg-[--hl-sm] hover:text-[--color-font] aria-selected:bg-[--hl-xs] aria-selected:focus:bg-[--hl-sm] aria-selected:hover:bg-[--hl-sm] focus:bg-[--hl-sm] transition-colors duration-300'
-            id='auth'
+            className="flex h-full flex-shrink-0 cursor-pointer select-none items-center justify-between gap-2 px-3 py-1 text-[--hl] outline-none transition-colors duration-300 hover:bg-[--hl-sm] hover:text-[--color-font] focus:bg-[--hl-sm] aria-selected:bg-[--hl-xs] aria-selected:text-[--color-font] aria-selected:hover:bg-[--hl-sm] aria-selected:focus:bg-[--hl-sm]"
+            id="auth"
           >
             <span>Auth</span>
             {!isNoneOrInherited && (
-              <span className='p-1 min-w-6 h-6 flex items-center justify-center text-xs rounded-lg border border-solid border-[--hl]'>
-                <span className='w-2 h-2 bg-green-500 rounded-full' />
+              <span className="flex h-6 min-w-6 items-center justify-center rounded-lg border border-solid border-[--hl] p-1 text-xs">
+                <span className="h-2 w-2 rounded-full bg-green-500" />
               </span>
             )}
           </Tab>
           <Tab
-            className='flex-shrink-0 h-full flex items-center justify-between cursor-pointer gap-2 outline-none select-none px-3 py-1 text-[--hl] aria-selected:text-[--color-font]  hover:bg-[--hl-sm] hover:text-[--color-font] aria-selected:bg-[--hl-xs] aria-selected:focus:bg-[--hl-sm] aria-selected:hover:bg-[--hl-sm] focus:bg-[--hl-sm] transition-colors duration-300'
-            id='headers'
+            className="flex h-full flex-shrink-0 cursor-pointer select-none items-center justify-between gap-2 px-3 py-1 text-[--hl] outline-none transition-colors duration-300 hover:bg-[--hl-sm] hover:text-[--color-font] focus:bg-[--hl-sm] aria-selected:bg-[--hl-xs] aria-selected:text-[--color-font] aria-selected:hover:bg-[--hl-sm] aria-selected:focus:bg-[--hl-sm]"
+            id="headers"
           >
             <span>Headers</span>
             {headersCount > 0 && (
-              <span className='p-1 min-w-6 h-6 flex items-center justify-center text-xs rounded-lg border border-solid border-[--hl]'>
+              <span className="flex h-6 min-w-6 items-center justify-center rounded-lg border border-solid border-[--hl] p-1 text-xs">
                 {headersCount}
               </span>
             )}
           </Tab>
           <Tab
-            className='flex-shrink-0 h-full flex items-center justify-between cursor-pointer gap-2 outline-none select-none px-3 py-1 text-[--hl] aria-selected:text-[--color-font]  hover:bg-[--hl-sm] hover:text-[--color-font] aria-selected:bg-[--hl-xs] aria-selected:focus:bg-[--hl-sm] aria-selected:hover:bg-[--hl-sm] focus:bg-[--hl-sm] transition-colors duration-300'
-            id='docs'
+            className="flex h-full flex-shrink-0 cursor-pointer select-none items-center justify-between gap-2 px-3 py-1 text-[--hl] outline-none transition-colors duration-300 hover:bg-[--hl-sm] hover:text-[--color-font] focus:bg-[--hl-sm] aria-selected:bg-[--hl-xs] aria-selected:text-[--color-font] aria-selected:hover:bg-[--hl-sm] aria-selected:focus:bg-[--hl-sm]"
+            id="docs"
           >
             Docs
           </Tab>
         </TabList>
-        <TabPanel className='w-full flex-1 flex flex-col h-full overflow-y-auto' id='params'>
+        <TabPanel className="flex h-full w-full flex-1 flex-col overflow-y-auto" id="params">
           {disabled && <PaneReadOnlyBanner />}
-          <div className="p-4 flex-shrink-0">
-            <div className="text-xs max-h-32 flex flex-col overflow-y-auto min-h-[2em] bg-[--hl-xs] px-2 py-1 border border-solid border-[--hl-sm]">
+
+          <div className="flex-shrink-0 p-4">
+            <div className="flex max-h-32 min-h-[2em] flex-col overflow-y-auto border border-solid border-[--hl-sm] bg-[--hl-xs] px-2 py-1 text-xs">
               <label className="label--small no-pad-top">Url Preview</label>
-              <ErrorBoundary
-                key={uniqueKey}
-                errorClassName="tall wide vertically-align font-error pad text-center"
-              >
+              <ErrorBoundary key={uniqueKey} errorClassName="tall wide vertically-align font-error pad text-center">
                 <RenderedQueryString request={activeRequest} />
               </ErrorBoundary>
             </div>
           </div>
-          <div className="flex-shrink-0 grid flex-1 [grid-template-rows:minmax(auto,min-content)] [grid-template-columns:100%] overflow-hidden">
-            <div className="min-h-[2rem] max-h-full flex flex-col overflow-y-auto [&_.key-value-editor]:p-0 flex-1">
-              <div className='flex items-center w-full p-4 h-4 justify-between'>
-                <Heading className='text-xs font-bold uppercase text-[--hl]'>Query parameters</Heading>
-                <div className='flex items-center gap-2'>
-                  <Button
-                    isDisabled={disabled || !urlHasQueryParameters}
-                    onPress={handleImportQueryFromUrl}
-                    className="w-[14ch] flex flex-shrink-0 gap-2 items-center justify-start px-2 py-1 h-full asma-pressed:bg-[--hl-sm] aria-selected:bg-[--hl-xs] aria-selected:focus:bg-[--hl-sm] aria-selected:hover:bg-[--hl-sm] focus:bg-[--hl-sm] rounded-sm text-[--color-font] hover:bg-[--hl-xs] focus:ring-inset ring-1 ring-transparent focus:ring-[--hl-md] transition-colors text-sm"
-                  >
-                    Import from URL
-                  </Button>
-                  <ToggleButton
-                    isDisabled={disabled}
-                    onChange={isSelected => {
-                      patchSettings({
-                        useBulkParametersEditor: isSelected,
-                      });
-                    }}
-                    isSelected={settings.useBulkParametersEditor}
-                    className="w-[14ch] flex flex-shrink-0 gap-2 items-center justify-start px-2 py-1 h-full rounded-sm text-[--color-font] hover:bg-[--hl-xs] focus:ring-inset ring-1 ring-transparent focus:ring-[--hl-md] transition-colors text-sm"
-                  >
-                    {({ isSelected }) => (
-                      <Fragment>
-                        <Icon icon={isSelected ? 'toggle-on' : 'toggle-off'} className={`${isSelected ? 'text-[--color-success]' : ''}`} />
-                        <span>{
-                          isSelected ? 'Regular Edit' : 'Bulk Edit'
-                        }</span>
-                      </Fragment>
-                    )}
-                  </ToggleButton>
-                </div>
-              </div>
-              <ErrorBoundary
-                key={uniqueKey}
-                errorClassName="tall wide vertically-align font-error pad text-center"
-              >
-                <RequestParametersEditor
-                  bulk={settings.useBulkParametersEditor}
-                  disabled={disabled}
-                />
-              </ErrorBoundary>
-            </div>
-            <div className='flex-1 flex flex-col gap-4 p-4 overflow-y-auto'>
-              <Heading className='text-xs font-bold uppercase text-[--hl]'>Path parameters</Heading>
-              {pathParameters.length > 0 && (
-                <div className="pr-[72.73px] w-full">
-                  <div className='grid gap-x-[20.8px] grid-cols-2 flex-shrink-0 w-full rounded-sm overflow-hidden'>
-                    {pathParameters.map(pathParameter => (
-                      <Fragment key={pathParameter.name}>
-                        <span className='p-2 select-none border-b border-solid border-[--hl-md] truncate flex items-center justify-end rounded-sm'>
-                          {pathParameter.name}
-                        </span>
-                        <div className='px-2 flex items-center h-full border-b border-solid border-[--hl-md]'>
-                          <OneLineEditor
-                            readOnly={disabled}
-                            key={activeRequest._id}
-                            id={'key-value-editor__name' + pathParameter.name}
-                            placeholder="Parameter value"
-                            defaultValue={pathParameter.value || ''}
-                            onChange={name => {
-                              onPathParameterChange(pathParameters.map(p => p.name === pathParameter.name ? { ...p, value: name } : p));
-                            }}
+          <PanelGroup className="flex-1 overflow-hidden" direction={'vertical'}>
+            <Panel minSize={20}>
+              <div className="flex h-full flex-col">
+                <div className="flex h-4 w-full items-center justify-between p-4">
+                  <Heading className="text-xs font-bold uppercase text-[--hl]">Query parameters</Heading>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      isDisabled={disabled || !urlHasQueryParameters}
+                      onPress={handleImportQueryFromUrl}
+                      className="asma-pressed:bg-[--hl-sm] flex h-full w-[14ch] flex-shrink-0 items-center justify-start gap-2 rounded-sm px-2 py-1 text-sm text-[--color-font] ring-1 ring-transparent transition-colors hover:bg-[--hl-xs] focus:bg-[--hl-sm] focus:ring-inset focus:ring-[--hl-md] aria-selected:bg-[--hl-xs] aria-selected:hover:bg-[--hl-sm] aria-selected:focus:bg-[--hl-sm]"
+                    >
+                      Import from URL
+                    </Button>
+                    <ToggleButton
+                      isDisabled={disabled}
+                      onChange={isSelected => {
+                        patchSettings({
+                          useBulkParametersEditor: isSelected,
+                        });
+                      }}
+                      isSelected={settings.useBulkParametersEditor}
+                      className="flex h-full w-[14ch] flex-shrink-0 items-center justify-start gap-2 rounded-sm px-2 py-1 text-sm text-[--color-font] ring-1 ring-transparent transition-colors hover:bg-[--hl-xs] focus:ring-inset focus:ring-[--hl-md]"
+                    >
+                      {({ isSelected }) => (
+                        <Fragment>
+                          <Icon
+                            icon={isSelected ? 'toggle-on' : 'toggle-off'}
+                            className={`${isSelected ? 'text-[--color-success]' : ''}`}
                           />
-                        </div>
-                      </Fragment>
-                    ))}
+                          <span>{isSelected ? 'Regular Edit' : 'Bulk Edit'}</span>
+                        </Fragment>
+                      )}
+                    </ToggleButton>
                   </div>
                 </div>
-              )}
-              {pathParameters.length === 0 && !dismissPathParameterTip && (
-                <div className='text-sm text-[--hl] rounded-sm border border-solid border-[--hl-md] p-2 flex items-center gap-2'>
-                  <Icon icon='info-circle' />
-                  <span>Path parameters are url path segments that start with a colon ':' e.g. ':id' </span>
-                  <Button
-                    className="flex flex-shrink-0 items-center justify-center aspect-square h-6 aria-pressed:bg-[--hl-sm] rounded-sm text-[--color-font] hover:bg-[--hl-xs] ml-auto"
-                    onPress={() => setDismissPathParameterTip('true')}
-                  >
-                    <Icon icon='close' />
-                  </Button>
-                </div>
-              )}
-            </div>
-          </div>
+                <ErrorBoundary key={uniqueKey} errorClassName="tall wide vertically-align font-error pad text-center">
+                  <RequestParametersEditor bulk={settings.useBulkParametersEditor} disabled={disabled} />
+                </ErrorBoundary>
+              </div>
+            </Panel>
+            <PanelResizeHandle className="h-[1px] w-full bg-[--hl-md]" />
+            <Panel minSize={20}>
+              <div className="flex h-full flex-col">
+                <Heading className="p-4 text-xs font-bold uppercase text-[--hl]">Path parameters</Heading>
+                {pathParameters.length > 0 && (
+                  <div className="w-full overflow-y-auto pl-4 pr-[72.73px]">
+                    <div className="grid w-full flex-shrink-0 grid-cols-2 gap-x-[20.8px] overflow-hidden rounded-sm">
+                      {pathParameters.map(pathParameter => (
+                        <Fragment key={pathParameter.name}>
+                          <span className="flex select-none items-center justify-end truncate rounded-sm border-b border-solid border-[--hl-md] p-2">
+                            {pathParameter.name}
+                          </span>
+                          <div className="flex h-full items-center border-b border-solid border-[--hl-md] px-2">
+                            <OneLineEditor
+                              readOnly={disabled}
+                              key={activeRequest._id}
+                              id={'key-value-editor__name' + pathParameter.name}
+                              placeholder="Parameter value"
+                              defaultValue={pathParameter.value || ''}
+                              onChange={name => {
+                                onPathParameterChange(
+                                  pathParameters.map(p => (p.name === pathParameter.name ? { ...p, value: name } : p)),
+                                );
+                              }}
+                            />
+                          </div>
+                        </Fragment>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {pathParameters.length === 0 && !dismissPathParameterTip && (
+                  <div className="flex items-center gap-2 rounded-sm border border-solid border-[--hl-md] p-2 text-sm text-[--hl]">
+                    <Icon icon="info-circle" />
+                    <span>Path parameters are url path segments that start with a colon ':' e.g. ':id' </span>
+                    <Button
+                      className="ml-auto flex aspect-square h-6 flex-shrink-0 items-center justify-center rounded-sm text-[--color-font] hover:bg-[--hl-xs] aria-pressed:bg-[--hl-sm]"
+                      onPress={() => setDismissPathParameterTip('true')}
+                    >
+                      <Icon icon="close" />
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </Panel>
+          </PanelGroup>
         </TabPanel>
-        <TabPanel className='w-full flex-1 flex flex-col' id='content-type'>
-          <Toolbar className="w-full flex-shrink-0 px-2 border-b border-solid border-[--hl-md] py-2 h-[--line-height-sm] flex items-center gap-2 justify-between">
+        <TabPanel className="flex w-full flex-1 flex-col" id="content-type">
+          <Toolbar className="flex h-[--line-height-sm] w-full flex-shrink-0 items-center justify-between gap-2 border-b border-solid border-[--hl-md] px-2 py-2">
             <WebSocketPreviewMode previewMode={previewMode} onSelect={changeMode} />
             <button
-              className='hover:brightness-75'
+              className="hover:brightness-75"
               style={{
                 padding: '0 var(--padding-md)',
                 marginLeft: 'var(--padding-xs)',
@@ -452,7 +464,7 @@ export const WebSocketRequestPane: FC<Props> = ({ environment }) => {
             workspaceId={workspaceId}
           />
         </TabPanel>
-        <TabPanel className='w-full flex-1 flex flex-col overflow-hidden' id='auth'>
+        <TabPanel className="flex w-full flex-1 flex-col overflow-hidden" id="auth">
           {disabled && <PaneReadOnlyBanner />}
           <AuthWrapper
             key={uniqueKey}
@@ -461,7 +473,7 @@ export const WebSocketRequestPane: FC<Props> = ({ environment }) => {
             authTypes={supportedAuthTypes}
           />
         </TabPanel>
-        <TabPanel className='w-full flex-1 overflow-y-auto' id='headers'>
+        <TabPanel className="w-full flex-1 overflow-y-auto" id="headers">
           {disabled && <PaneReadOnlyBanner />}
           <RequestHeadersEditor
             key={uniqueKey}
@@ -471,7 +483,7 @@ export const WebSocketRequestPane: FC<Props> = ({ environment }) => {
             requestType="WebSocketRequest"
           />
         </TabPanel>
-        <TabPanel className='w-full flex-1 overflow-y-auto' id='docs'>
+        <TabPanel className="w-full flex-1 overflow-y-auto" id="docs">
           <MarkdownEditor
             key={uniqueKey}
             placeholder="Write a description"
@@ -481,10 +493,7 @@ export const WebSocketRequestPane: FC<Props> = ({ environment }) => {
         </TabPanel>
       </Tabs>
       {isRequestSettingsModalOpen && (
-        <RequestSettingsModal
-          request={activeRequest}
-          onHide={() => setIsRequestSettingsModalOpen(false)}
-        />
+        <RequestSettingsModal request={activeRequest} onHide={() => setIsRequestSettingsModalOpen(false)} />
       )}
     </Pane>
   );

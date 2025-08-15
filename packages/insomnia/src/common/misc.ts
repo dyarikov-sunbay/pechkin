@@ -1,6 +1,7 @@
+import zlib from 'node:zlib';
+
 import fuzzysort from 'fuzzysort';
 import { v4 as uuidv4 } from 'uuid';
-import zlib from 'zlib';
 
 import { DEBOUNCE_MILLIS } from './constants';
 
@@ -46,8 +47,14 @@ export function hasAcceptEncodingHeader<T extends Header>(headers: T[]) {
   return filterHeaders(headers, 'accept-encoding').length > 0;
 }
 
-export function getSetCookieHeaders<T extends Header>(headers: T[]): T[] {
-  return filterHeaders(headers, 'set-cookie');
+export function getSetCookieHeaders(headers: Header[]): Header[] {
+  return filterHeaders(headers, 'set-cookie').map(h => {
+    // remove Nunjucks interpolation symbols
+    return {
+      name: h.name,
+      value: h.value.replaceAll('{{', '').replaceAll('}}', '').replaceAll('{%', '').replaceAll('%}', ''),
+    };
+  });
 }
 
 export function getLocationHeader<T extends Header>(headers: T[]): T | null {
@@ -85,48 +92,27 @@ export function generateId(prefix?: string) {
 
   if (prefix) {
     return `${prefix}_${id}`;
-  } else {
-    return id;
   }
+  return id;
 }
 
 export function delay(milliseconds: number = DEBOUNCE_MILLIS) {
   return new Promise<void>(resolve => setTimeout(resolve, milliseconds));
 }
 
-export function keyedDebounce<T>(
-  callback: (t: Record<string, T[]>) => void,
-  millis: number = DEBOUNCE_MILLIS
-) {
+export const debounce = <F extends (...args: Parameters<F>) => ReturnType<F>>(
+  func: F,
+  waitFor: number = DEBOUNCE_MILLIS,
+) => {
   let timeout: NodeJS.Timeout;
-  let results: Record<string, T[]> = {};
-  const t = function(key: string, ...args: T[]) {
-    results[key] = args;
-    if (timeout) {
-      clearTimeout(timeout);
-    }
-    timeout = setTimeout(() => {
-      if (!Object.keys(results).length) {
-        return;
-      }
-      callback(results);
-      results = {};
-    }, millis);
-  };
-  return t;
-}
 
-export function debounce<T extends Function>(
-  callback: T,
-  milliseconds: number = DEBOUNCE_MILLIS,
-): T {
-  // For regular debounce, just use a keyed debounce with a fixed key
-  // @ts-expect-error -- unsound contravariance
-  return keyedDebounce(results => {
-    // eslint-disable-next-line prefer-spread -- don't know if there was a "this binding" reason for this being this way so I'm leaving it alone
-    callback.apply(null, results.__key__);
-  }, milliseconds).bind(null, '__key__');
-}
+  const debounced = (...args: Parameters<F>) => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func(...args), waitFor);
+  };
+
+  return debounced;
+};
 
 export function describeByteSize(bytes: number, long = false) {
   bytes = Math.round(bytes * 10) / 10;
@@ -156,9 +142,8 @@ export function describeByteSize(bytes: number, long = false) {
 export function fnOrString(v: string | ((...args: any[]) => any), ...args: any[]) {
   if (typeof v === 'string') {
     return v;
-  } else {
-    return v(...args);
   }
+  return v(...args);
 }
 
 export function compressObject(obj: any) {
@@ -200,11 +185,7 @@ export function fuzzyMatch(
   return fuzzyMatchAll(searchString, [text], options);
 }
 
-export function fuzzyMatchAll(
-  searchString: string,
-  allText: string[],
-  options: FuzzyMatchOptions = {},
-) {
+export function fuzzyMatchAll(searchString: string, allText: string[], options: FuzzyMatchOptions = {}) {
   if (!searchString || !searchString.trim()) {
     return null;
   }
@@ -259,9 +240,7 @@ export function fuzzyMatchAll(
   };
 }
 
-export function isNotNullOrUndefined<ValueType>(
-  value: ValueType | null | undefined
-): value is ValueType {
+export function isNotNullOrUndefined<ValueType>(value: ValueType | null | undefined): value is ValueType {
   if (value === null || value === undefined) {
     return false;
   }
@@ -270,3 +249,18 @@ export function isNotNullOrUndefined<ValueType>(
 }
 
 export const toKebabCase = (value: string) => value.replace(/ /g, '-');
+
+// unescape forward slashes in a string if needed
+export function unescapeForwardSlash(str: string): string {
+  // Use a regular expression to find runs of one or more backslashes (bs) followed by a slash
+  return str.replace(/(\\+)\//g, (match, bs) => {
+    // Determine if the number of backslashes is odd or even
+    // Odd count: the last backslash escapes the slash; we remove that one
+    if (bs.length % 2 === 1) {
+      // Keep all but the last backslash, then append the unescaped forward slash
+      return bs.slice(0, bs.length - 1) + '/';
+    }
+    // Even count: all backslashes are literal escapes; leave the sequence unchanged
+    return match;
+  });
+}

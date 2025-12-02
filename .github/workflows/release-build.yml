@@ -41,7 +41,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest-large
+          - os: macos-latest
             csc_link_secret: DESIGNER_MAC_CSC_LINK
             csc_key_password_secret: DESIGNER_MAC_CSC_KEY_PASSWORD
           - os: windows-latest

@@ -97,7 +97,7 @@ jobs:
           APPLE_ID: ${{ runner.os == 'macOS' && secrets.DESIGNER_APPLE_ID || '' }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ runner.os == 'macOS' && secrets.DESIGNER_APPLE_ID_PASSWORD || '' }}
           APPLE_ID_PASSWORD: ${{ runner.os == 'macOS' && secrets.DESIGNER_APPLE_ID_PASSWORD || '' }}
-          APPLE_TEAM_ID: FX44YY62GV
+          APPLE_TEAM_ID: ${{ secrets.DESIGNER_TEAM_ID || '' }}
           CSC_LINK: ${{ matrix.csc_link_secret != '' && secrets[matrix.csc_link_secret] || '' }}
           CSC_KEY_PASSWORD: ${{ matrix.csc_key_password_secret != '' && secrets[matrix.csc_key_password_secret] || ''  }}
 

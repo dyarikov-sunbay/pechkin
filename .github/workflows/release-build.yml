@@ -194,7 +194,7 @@ jobs:
           MACOS_CERTIFICATE: ${{ secrets.DESIGNER_MAC_CSC_LINK }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.DESIGNER_MAC_CSC_KEY_PASSWORD }}
           PKG_NAME: inso-${{ matrix.os }}-${{ env.INSO_VERSION }}
-          BUNDLE_ID: com.insomnia.inso
+          BUNDLE_ID: ru.pechkin.itomnia
           VERSION: ${{ env.INSO_VERSION }}
 
       - name: Notarize Inso CLI installer (macOS only)
@@ -202,7 +202,7 @@ jobs:
         uses: lando/notarize-action@b5c3ef16cf2fbcf2af26dc58c90255ec242abeed # v2
         with:
           product-path: ./packages/${{ env.INSO_PACKAGE_NAME }}/artifacts/inso-${{ matrix.os }}-${{ env.INSO_VERSION }}.pkg
-          primary-bundle-id: com.insomnia.inso
+          primary-bundle-id: ru.pechkin.itomnia
           appstore-connect-username: ${{ secrets.DESIGNER_APPLE_ID }}
           appstore-connect-password: ${{ secrets.DESIGNER_APPLE_ID_PASSWORD }}
           appstore-connect-team-id: RN9D5ARA8F
@@ -219,7 +219,7 @@ jobs:
         uses: lando/notarize-action@b5c3ef16cf2fbcf2af26dc58c90255ec242abeed # v2
         with:
           product-path: ./packages/${{ env.INSO_PACKAGE_NAME }}/binaries/inso
-          primary-bundle-id: com.insomnia.inso-binary
+          primary-bundle-id: ru.pechkin.itomnia-binary
           appstore-connect-username: ${{ secrets.DESIGNER_APPLE_ID }}
           appstore-connect-password: ${{ secrets.DESIGNER_APPLE_ID_PASSWORD }}
           appstore-connect-team-id: RN9D5ARA8F

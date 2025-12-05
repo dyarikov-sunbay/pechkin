@@ -19,7 +19,7 @@ set -e
 
 # Some constants
 APP_IDENTITY="Developer ID Application: Mikhail Aristov (RN9D5ARA8F)"
-INSTALL_IDENTITY="Developer ID Application: Mikhail Aristov (RN9D5ARA8F)"
+INSTALL_IDENTITY="Developer ID Installer: Mikhail Aristov (RN9D5ARA8F)"
 
 ENTITLEMENTS_PATH="src/scripts/codesign.entitlements"
 

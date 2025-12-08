@@ -13,7 +13,7 @@ With Insomnia you can:
 - **And more** including the ability to use 3rd party plugins.
 
 The following storage options are supported for your Insomnia projects, collections, design specs and all other resources:
-
+ 
 - **Local Vault**: for 100% local storage of collections, design specs and every other resource.
 - **Git Sync**: for Git storage using any 3rd party Git repository, without going through the cloud.
 - **Cloud Sync**: for cloud collaboration, optionally end-to-end encrypted (E2EE) in the cloud.

@@ -18,8 +18,8 @@ set -e
 # Assumed current working directory is packages/insomnia-inso
 
 # Some constants
-APP_IDENTITY="Developer ID Application: Kong Inc. (FX44YY62GV)"
-INSTALL_IDENTITY="Developer ID Installer: Kong Inc. (FX44YY62GV)"
+APP_IDENTITY="Developer ID Application: Mikhail Aristov (RN9D5ARA8F)"
+INSTALL_IDENTITY="Developer ID Installer: Mikhail Aristov (RN9D5ARA8F)"
 
 ENTITLEMENTS_PATH="src/scripts/codesign.entitlements"
 

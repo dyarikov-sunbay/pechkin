@@ -194,7 +194,7 @@ jobs:
           MACOS_CERTIFICATE: ${{ secrets.DESIGNER_MAC_CSC_LINK }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.DESIGNER_MAC_CSC_KEY_PASSWORD }}
           PKG_NAME: inso-${{ matrix.os }}-${{ env.INSO_VERSION }}
-          BUNDLE_ID: com.insomnia.inso
+          BUNDLE_ID: ru.pechkin.itomnia
           VERSION: ${{ env.INSO_VERSION }}
 
       - name: Notarize Inso CLI installer (macOS only)
@@ -202,7 +202,7 @@ jobs:
         uses: lando/notarize-action@b5c3ef16cf2fbcf2af26dc58c90255ec242abeed # v2
         with:
           product-path: ./packages/${{ env.INSO_PACKAGE_NAME }}/artifacts/inso-${{ matrix.os }}-${{ env.INSO_VERSION }}.pkg
-          primary-bundle-id: com.insomnia.inso
+          primary-bundle-id: ru.pechkin.itomnia
           appstore-connect-username: ${{ secrets.DESIGNER_APPLE_ID }}
           appstore-connect-password: ${{ secrets.DESIGNER_APPLE_ID_PASSWORD }}
           appstore-connect-team-id: RN9D5ARA8F
@@ -219,7 +219,7 @@ jobs:
         uses: lando/notarize-action@b5c3ef16cf2fbcf2af26dc58c90255ec242abeed # v2
         with:
           product-path: ./packages/${{ env.INSO_PACKAGE_NAME }}/binaries/inso
-          primary-bundle-id: com.insomnia.inso-binary
+          primary-bundle-id: ru.pechkin.itomnia-binary
           appstore-connect-username: ${{ secrets.DESIGNER_APPLE_ID }}
           appstore-connect-password: ${{ secrets.DESIGNER_APPLE_ID_PASSWORD }}
           appstore-connect-team-id: RN9D5ARA8F
@@ -227,32 +227,32 @@ jobs:
       - name: Create Inso zip/tar/gz artifacts
         run: npm run artifacts -w insomnia-inso
 
-      - name: Login to Docker Hub
-        if: runner.os == 'Linux' && runner.arch == 'X64'
-        uses: docker/login-action@3d58c274f17dffee475a5520cbe67f0a882c4dbb # v2.1.0
-        with:
-          username: ${{ secrets.DOCKER_REGISTRY_USER }}
-          password: ${{ secrets.DOCKER_REGISTRY_TOKEN }}
+      # - name: Login to Docker Hub
+      #   if: runner.os == 'Linux' && runner.arch == 'X64'
+      #   uses: docker/login-action@3d58c274f17dffee475a5520cbe67f0a882c4dbb # v2.1.0
+      #   with:
+      #     username: ${{ secrets.DOCKER_REGISTRY_USER }}
+      #     password: ${{ secrets.DOCKER_REGISTRY_TOKEN }}
 
-      - name: Create inso Docker Image artifacts
-        if: runner.os == 'Linux' && runner.arch == 'X64'
-        run: |
-          DOCKER_BUILDKIT=1 docker build --tag ${{ env.INSO_PACKAGE_NAME }}:temp ./packages/${{ env.INSO_PACKAGE_NAME }}
-          docker save ${{ env.INSO_PACKAGE_NAME }}:temp -o ./packages/${{ env.INSO_PACKAGE_NAME }}/artifacts/${{ env.INSO_DOCKER_TAR }}
+      # - name: Create inso Docker Image artifacts
+      #   if: runner.os == 'Linux' && runner.arch == 'X64'
+      #   run: |
+      #     DOCKER_BUILDKIT=1 docker build --tag ${{ env.INSO_PACKAGE_NAME }}:temp ./packages/${{ env.INSO_PACKAGE_NAME }}
+      #     docker save ${{ env.INSO_PACKAGE_NAME }}:temp -o ./packages/${{ env.INSO_PACKAGE_NAME }}/artifacts/${{ env.INSO_DOCKER_TAR }}
 
       # Produce Docker SBOM for Inso Image
       # Automatically uploads to workflow assets
-      - name: Scan inso docker artifacts
-        id: sbom_action
-        if: runner.os == 'Linux' && runner.arch == 'X64'
-        uses: Kong/public-shared-actions/security-actions/scan-docker-image@a18abf762d6e2444bcbfd20de70451ea1e3bc1b1 # v4.1.1
-        with:
-          asset_prefix: image-inso-${{ runner.os }}-${{ runner.arch }}
-          image: ./packages/${{ env.INSO_PACKAGE_NAME }}/artifacts/${{ env.INSO_DOCKER_TAR }}
-          upload-sbom-release-assets: false # No release is publushed yet. Uploads as workflow assets
-          skip_cis_scan: true
-        env:
-          SYFT_SOURCE_NAME: ${{ env.INSO_DOCKER_TAR }}
+      # - name: Scan inso docker artifacts
+      #   id: sbom_action
+      #   if: runner.os == 'Linux' && runner.arch == 'X64'
+      #   uses: Kong/public-shared-actions/security-actions/scan-docker-image@a18abf762d6e2444bcbfd20de70451ea1e3bc1b1 # v4.1.1
+      #   with:
+      #     asset_prefix: image-inso-${{ runner.os }}-${{ runner.arch }}
+      #     image: ./packages/${{ env.INSO_PACKAGE_NAME }}/artifacts/${{ env.INSO_DOCKER_TAR }}
+      #     upload-sbom-release-assets: false # No release is publushed yet. Uploads as workflow assets
+      #     skip_cis_scan: true
+      #   env:
+      #     SYFT_SOURCE_NAME: ${{ env.INSO_DOCKER_TAR }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -282,7 +282,7 @@ jobs:
             !packages/insomnia/build/yarn-standalone.js
 
   update-pull-request:
-    timeout-minutes: ${{ fromJSON(vars.GHA_DEFAULT_TIMEOUT) }}
+    timeout-minutes: ${{ fromJSON(vars.GHA_DEFAULT_TIMEOUT != '' && vars.GHA_DEFAULT_TIMEOUT || '30') }}
     needs: build-and-upload-release-artifacts
     runs-on: ubuntu-22.04
     steps:

@@ -21,20 +21,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # Perform SCA / SBOM analysis for the entire monorepo code repository
-      # Produces SCA(SBOM and CVE) report
-      # Helps understand vulnerabilities / license compliance across third party dependencies
-      # Automatically uploads to workflow assets
-      # (TODO): Produce workspace/package specific SBOM. Current limitation: https://github.com/anchore/syft/issues/2574
-      # (TODO): needs check (block) further steps if SCA fails
       - id: sca-project
         uses: Kong/public-shared-actions/security-actions/sca@a18abf762d6e2444bcbfd20de70451ea1e3bc1b1 # v4.1.1
         with:
           dir: .
           upload-sbom-release-assets: false
+
   build-and-upload-release-artifacts:
     timeout-minutes: 30
     runs-on: ${{ matrix.os }}
+    # <-- Нужно право на редактирование релизов для gh release upload
+    permissions:
+      contents: write
+      packages: write
     env:
       INSO_PACKAGE_NAME: insomnia-inso
       INSO_DOCKER_TAR: inso-docker-image.tar
@@ -105,7 +104,6 @@ jobs:
         env:
           NODE_OPTIONS: '--max_old_space_size=6144'
 
-      # If this step fails its possible apple has new license terms which need to be accepted by logging into https://developer.apple.com/account
       - name: Package app (MacOS only)
         if: runner.os == 'macOS'
         shell: bash
@@ -118,63 +116,6 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.DESIGNER_TEAM_ID || '' }}
           CSC_LINK: ${{ matrix.csc_link_secret != '' && secrets[matrix.csc_link_secret] || '' }}
           CSC_KEY_PASSWORD: ${{ matrix.csc_key_password_secret != '' && secrets[matrix.csc_key_password_secret] || ''  }}
-
-#      - name: Package unpacked app (Windows only)
-#        if: runner.os == 'Windows'
-#        shell: bash
-#        run: NODE_OPTIONS='--max_old_space_size=6144' npm run app-package 
-
-#      # wraps the Insomnia.exe PE with another PE that will bootstrap particular security
-#      # features added to Windows 8 in order to stopgap CVE-2025-1353
-#      - name: Compile secure wrapper (Windows only)
-#        if: runner.os == 'Windows'
-#        shell: bash
-#        run: ./build-secure-wrapper.sh CI
-
-#      - name: Move .dll and .exe files to /tosign (PowerShell)
-#        if: runner.os == 'Windows'
-#        shell: pwsh
-#        run: |
-#          New-Item -Path "packages/insomnia/dist/win-unpacked/tosign" -ItemType Directory -Force
-#          New-Item -Path "packages/insomnia/dist/win-unpacked/signed" -ItemType Directory -Force
-#          Get-ChildItem -Path "packages/insomnia/dist/win-unpacked" -Filter *.dll | Move-Item -Destination "packages/insomnia/dist/win-unpacked/tosign"
-#          Get-ChildItem -Path "packages/insomnia/dist/win-unpacked" -Filter *.exe | Move-Item -Destination "packages/insomnia/dist/win-unpacked/tosign"
-
-#      # signs unpacked electron-builder contents, in this case only the .exe
-#      - name: Code-sign unpacked .exe (Windows only)
-#        if: runner.os == 'Windows'
-#        uses: sslcom/esigner-codesign@3b2dc3b6075c05ef889d88b761a1fd0183b28c6a # develop
-#        with:
-#          command: batch_sign
-#          username: ${{secrets.ES_USERNAME}}
-#          password: ${{secrets.ES_PASSWORD}}
-#          credential_id: ${{secrets.ES_CREDENTIAL_ID}}
-#          totp_secret: ${{secrets.ES_TOTP_SECRET}}
-#          dir_path: packages/insomnia/dist/win-unpacked/tosign
-#          output_path: packages/insomnia/dist/win-unpacked/signed
-#          override: true
-
-#      - name: Move .dll and .exe files back to win-unpacked and delete /tosign
-#        if: runner.os == 'Windows'
-#        shell: pwsh
-#        run: |
-#          Get-ChildItem -Path "packages/insomnia/dist/win-unpacked/signed" -Filter *.dll | Move-Item -Destination "packages/insomnia/dist/win-unpacked"
-#          Get-ChildItem -Path "packages/insomnia/dist/win-unpacked/signed" -Filter *.exe | Move-Item -Destination "packages/insomnia/dist/win-unpacked"
-#          Remove-Item -Path "packages/insomnia/dist/win-unpacked/tosign" -Recurse -Force
-#          Remove-Item -Path "packages/insomnia/dist/win-unpacked/signed" -Recurse -Force
-
-#      # re-packages the now code-signed electron-builder contents into the installer
-#      - name: Package dist app (Windows only)
-#        if: runner.os == 'Windows'
-#        shell: bash
-#        run: |
-#          docker pull ghcr.io/sslcom/codesigner-win:latest
-#          NODE_OPTIONS='--max_old_space_size=6144' npm run package:windows:dist -w insomnia
-#        env:
-#          USERNAME: ${{secrets.ES_USERNAME}}
-#          PASSWORD: ${{secrets.ES_PASSWORD}}
-#          CREDENTIAL_ID: ${{secrets.ES_CREDENTIAL_ID}}
-#          TOTP_SECRET: ${{secrets.ES_TOTP_SECRET}}
 
       - name: Package inso
         run: |
@@ -228,33 +169,6 @@ jobs:
       - name: Create Inso zip/tar/gz artifacts
         run: npm run artifacts -w insomnia-inso
 
-      # - name: Login to Docker Hub
-      #   if: runner.os == 'Linux' && runner.arch == 'X64'
-      #   uses: docker/login-action@3d58c274f17dffee475a5520cbe67f0a882c4dbb # v2.1.0
-      #   with:
-      #     username: ${{ secrets.DOCKER_REGISTRY_USER }}
-      #     password: ${{ secrets.DOCKER_REGISTRY_TOKEN }}
-
-      # - name: Create inso Docker Image artifacts
-      #   if: runner.os == 'Linux' && runner.arch == 'X64'
-      #   run: |
-      #     DOCKER_BUILDKIT=1 docker build --tag ${{ env.INSO_PACKAGE_NAME }}:temp ./packages/${{ env.INSO_PACKAGE_NAME }}
-      #     docker save ${{ env.INSO_PACKAGE_NAME }}:temp -o ./packages/${{ env.INSO_PACKAGE_NAME }}/artifacts/${{ env.INSO_DOCKER_TAR }}
-
-      # Produce Docker SBOM for Inso Image
-      # Automatically uploads to workflow assets
-      # - name: Scan inso docker artifacts
-      #   id: sbom_action
-      #   if: runner.os == 'Linux' && runner.arch == 'X64'
-      #   uses: Kong/public-shared-actions/security-actions/scan-docker-image@a18abf762d6e2444bcbfd20de70451ea1e3bc1b1 # v4.1.1
-      #   with:
-      #     asset_prefix: image-inso-${{ runner.os }}-${{ runner.arch }}
-      #     image: ./packages/${{ env.INSO_PACKAGE_NAME }}/artifacts/${{ env.INSO_DOCKER_TAR }}
-      #     upload-sbom-release-assets: false # No release is publushed yet. Uploads as workflow assets
-      #     skip_cis_scan: true
-      #   env:
-      #     SYFT_SOURCE_NAME: ${{ env.INSO_DOCKER_TAR }}
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -281,6 +195,79 @@ jobs:
             packages/insomnia/build/*.js
             packages/insomnia/build/*.map
             !packages/insomnia/build/yarn-standalone.js
+
+      # ---------------------------------------------------------------------
+      # NEW: compute release tag & attach built files to GitHub Release as assets
+      # ---------------------------------------------------------------------
+      - name: Compute RELEASE_VERSION and RELEASE_TAG
+        id: set_release
+        shell: bash
+        run: |
+          # github.ref_name is like 'release/11.3.0-beta.5'
+          BRANCH="${GITHUB_REF_NAME:-${GITHUB_REF}}"
+          # if ref is refs/heads/release/..., extract
+          if [[ "$BRANCH" == refs/* ]]; then
+            BRANCH="${BRANCH#refs/heads/}"
+          fi
+          VERSION="${BRANCH#release/}"
+          echo "RELEASE_VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "RELEASE_TAG=core@${VERSION}" >> $GITHUB_ENV
+          echo "Computed RELEASE_VERSION=${VERSION} RELEASE_TAG=core@${VERSION}"
+
+      - name: Ensure Release exists (create draft if missing) and upload release assets
+        shell: bash
+        # Use PAT_RELEASE secret (must be created in repo settings). GH CLI uses GH_TOKEN env.
+        env:
+          GH_TOKEN: ${{ secrets.PAT_RELEASE }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+        run: |
+          set -euo pipefail
+          # Ensure gh is available
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "gh CLI not found; installing..."
+            curl -fsSL https://github.com/cli/cli/releases/latest/download/gh_$(uname -s)_$(uname -m).tar.gz -o /tmp/gh.tar.gz
+            mkdir -p /tmp/gh && tar -xzf /tmp/gh.tar.gz -C /tmp/gh --strip-components=1
+            sudo /tmp/gh/bin/gh --version || true
+            export PATH="/tmp/gh/bin:$PATH"
+          fi
+
+          TAG="$RELEASE_TAG"
+          # if release absent -> create as draft
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG not found, creating draft release..."
+            gh release create "$TAG" --title="${RELEASE_VERSION} 📦" --notes "Auto-created release assets by CI for ${RELEASE_VERSION}" --draft
+          else
+            echo "Release $TAG exists"
+          fi
+
+          # file patterns to attach to release (add/remove patterns as needed)
+          patterns=(
+            "packages/insomnia/dist/*.exe"
+            "packages/insomnia/dist/*.zip"
+            "packages/insomnia/dist/*.dmg"
+            "packages/insomnia/dist/*.AppImage"
+            "packages/insomnia/dist/*.tar.gz"
+            "packages/insomnia-inso/artifacts/*"
+          )
+
+          uploaded=false
+          shopt -s nullglob
+          for pat in "${patterns[@]}"; do
+            for f in $pat; do
+              if [ -f "$f" ]; then
+                echo "Uploading $f to release $TAG"
+                gh release upload "$TAG" "$f" --clobber || echo "Warning: upload failed for $f"
+                uploaded=true
+              fi
+            done
+          done
+          if [ "$uploaded" = false ]; then
+            echo "No files matched for upload (patterns: ${patterns[*]}). This may be expected for some matrix entries."
+          fi
+      # ---------------------------------------------------------------------
+      # END NEW
+      # ---------------------------------------------------------------------
 
   update-pull-request:
     timeout-minutes: ${{ fromJSON(vars.GHA_DEFAULT_TIMEOUT != '' && vars.GHA_DEFAULT_TIMEOUT || '30') }}
@@ -317,32 +304,6 @@ jobs:
 
             Download release artifacts [here](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
-            <details>
-            <summary>Edit Changelog file...</summary>
-
-            You can update the changelog.md in this branch, run git log to get the latest changes:
-
-            ```bash
-            git log --no-merges --oneline --pretty=format:'* %s by @%an' --since="<last release tag>" --until="release/${{ steps.release_version.outputs.version }}"
-            ```
-            </details>
-
-            <details>
-            <summary>Conflicts? Merge branch step failed on the publish workflow? Try this...</summary>
-
-            Run locally:
-
-            ```bash
-            # Make sure git remote is Kong/insomnia...
-
-            git checkout develop
-            git merge --no-ff release/<replaced with version>
-
-            # Solve merge conflicts ...
-            # If there's package-lock conflicts, run `npm install` and commit the package-lock changes
-
-            git push
-            ```
-            </details>
+            ...
           destination_branch: develop
           github_token: ${{ secrets.PAT_RELEASE }}

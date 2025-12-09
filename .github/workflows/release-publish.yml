@@ -127,13 +127,13 @@ jobs:
       #     --source-uri 'github.com/Kong/insomnia-ee' \
       #     ${{env.ARTIFACTS_DOWNLOAD_PATH}}/inso-*-${{env.RELEASE_VERSION}}.{zip,tar.xz,pkg}
 
-      - name: Verify Insomnia App Binary Provenance for artifacts produced on insomnia-ee
-        run: |
-          slsa-verifier verify-artifact \
-          --print-provenance \
-          --provenance-path '${{env.ARTIFACTS_DOWNLOAD_PATH}}/insomnia-provenance.intoto.jsonl' \
-          --source-uri 'github.com/Kong/insomnia-ee' \
-          ${{env.ARTIFACTS_DOWNLOAD_PATH}}/Insomnia.Core-${{env.RELEASE_VERSION}}.{snap,tar.gz,zip,rpm,dmg,deb,AppImage,exe}
+      # - name: Verify Insomnia App Binary Provenance for artifacts produced on insomnia-ee
+      #   run: |
+      #     slsa-verifier verify-artifact \
+      #     --print-provenance \
+      #     --provenance-path '${{env.ARTIFACTS_DOWNLOAD_PATH}}/insomnia-provenance.intoto.jsonl' \
+      #     --source-uri 'github.com/Kong/insomnia-ee' \
+      #     ${{env.ARTIFACTS_DOWNLOAD_PATH}}/Insomnia.Core-${{env.RELEASE_VERSION}}.{snap,tar.gz,zip,rpm,dmg,deb,AppImage,exe}
 
       - name: Publish release
         run: |

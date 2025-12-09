@@ -345,4 +345,4 @@ jobs:
             ```
             </details>
           destination_branch: develop
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.PAT_RELEASE }}

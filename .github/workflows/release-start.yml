@@ -80,16 +80,17 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_BRANCH }}
+          token: ${{ secrets.PAT_RELEASE }}
           persist-credentials: false
 
       - name: Configure Git user
         id: configure_git_user
-        uses: Homebrew/actions/git-user-config@266845213695c3047d210b2e8fbc42ecdaf45802 # master
+        uses: Homebrew/actions/git-user-config@266845213695c3047d210b2e8fbc42ecdaf45802
         with:
           username: ${{ (github.event_name == 'workflow_dispatch' && github.actor) || 'insomnia-infra' }}
 
       # ############################################################
-      # re-run the versioning steps to apply to the new branch
+      # Re-run versioning on release branch
 
       - name: (Re-run) App version (stable, patch latest stable)
         if: github.event.inputs.channel == 'stable' && !github.event.inputs.version
@@ -112,19 +113,23 @@ jobs:
       - name: Git Commit
         run: git commit -am "Bump app version to ${{ env.RELEASE_VERSION }}"
 
-      - name: Git Push changes
+      # NEW — Create tag
+      - name: Create Git Tag
+        run: git tag core@${{ env.RELEASE_VERSION }}
+
+      # NEW — Push commits + tags
+      - name: Git Push changes and tags
         run: |
-          remote_repo="https://${GITHUB_ACTOR}:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push "${remote_repo}" --follow-tags
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_RELEASE }}
+          remote_repo="https://${GITHUB_ACTOR}:${{ secrets.PAT_RELEASE }}@github.com/${GITHUB_REPOSITORY}.git"
+          git push "${remote_repo}"
+          git push "${remote_repo}" --tags
 
       - name: Create Draft Release
         run: |
           gh release create core@${{ env.RELEASE_VERSION }} \
-          --title="${{ env.RELEASE_VERSION }} 📦" \
-          --target=${{ env.RELEASE_BRANCH }} \
-          --generate-notes \
-          --draft
+            --title="${{ env.RELEASE_VERSION }} 📦" \
+            --target=${{ env.RELEASE_BRANCH }} \
+            --generate-notes \
+            --draft
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_RELEASE }}

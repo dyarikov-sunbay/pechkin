@@ -61,6 +61,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Show release info (debug)
+        run: gh release view $RELEASE_CORE_TAG --json assets,name,tagName || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
       - name: Download release assets
         run: |
           gh release download core@${{ env.RELEASE_VERSION }} --dir=${{ env.ARTIFACTS_DOWNLOAD_PATH }} --skip-existing

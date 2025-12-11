@@ -117,6 +117,65 @@ jobs:
           CSC_LINK: ${{ matrix.csc_link_secret != '' && secrets[matrix.csc_link_secret] || '' }}
           CSC_KEY_PASSWORD: ${{ matrix.csc_key_password_secret != '' && secrets[matrix.csc_key_password_secret] || ''  }}
 
+      # ---------------------------
+      # Windows packaging (restored)
+      # ---------------------------
+      - name: Package unpacked app (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: NODE_OPTIONS='--max_old_space_size=6144' npm run package:windows:unpacked -w insomnia
+
+      - name: Compile secure wrapper (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ./build-secure-wrapper.sh CI
+
+      - name: Move .dll and .exe files to /tosign (PowerShell)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -Path "packages/insomnia/dist/win-unpacked/tosign" -ItemType Directory -Force
+          New-Item -Path "packages/insomnia/dist/win-unpacked/signed" -ItemType Directory -Force
+          Get-ChildItem -Path "packages/insomnia/dist/win-unpacked" -Filter *.dll | Move-Item -Destination "packages/insomnia/dist/win-unpacked/tosign"
+          Get-ChildItem -Path "packages/insomnia/dist/win-unpacked" -Filter *.exe | Move-Item -Destination "packages/insomnia/dist/win-unpacked/tosign"
+
+      - name: Code-sign unpacked .exe (Windows only)
+        if: runner.os == 'Windows'
+        uses: sslcom/esigner-codesign@3b2dc3b6075c05ef889d88b761a1fd0183b28c6a # develop
+        with:
+          command: batch_sign
+          username: ${{secrets.ES_USERNAME}}
+          password: ${{secrets.ES_PASSWORD}}
+          credential_id: ${{secrets.ES_CREDENTIAL_ID}}
+          totp_secret: ${{secrets.ES_TOTP_SECRET}}
+          dir_path: packages/insomnia/dist/win-unpacked/tosign
+          output_path: packages/insomnia/dist/win-unpacked/signed
+          override: true
+
+      - name: Move .dll and .exe files back to win-unpacked and delete /tosign
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path "packages/insomnia/dist/win-unpacked/signed" -Filter *.dll | Move-Item -Destination "packages/insomnia/dist/win-unpacked"
+          Get-ChildItem -Path "packages/insomnia/dist/win-unpacked/signed" -Filter *.exe | Move-Item -Destination "packages/insomnia/dist/win-unpacked"
+          Remove-Item -Path "packages/insomnia/dist/win-unpacked/tosign" -Recurse -Force
+          Remove-Item -Path "packages/insomnia/dist/win-unpacked/signed" -Recurse -Force
+
+      - name: Package dist app (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          docker pull ghcr.io/sslcom/codesigner-win:latest
+          NODE_OPTIONS='--max_old_space_size=6144' npm run package:windows:dist -w insomnia
+        env:
+          USERNAME: ${{secrets.ES_USERNAME}}
+          PASSWORD: ${{secrets.ES_PASSWORD}}
+          CREDENTIAL_ID: ${{secrets.ES_CREDENTIAL_ID}}
+          TOTP_SECRET: ${{secrets.ES_TOTP_SECRET}}
+      # ---------------------------
+      # End Windows packaging
+      # ---------------------------
+
       - name: Package inso
         run: |
           echo "Replacing electron binary with node binary"
